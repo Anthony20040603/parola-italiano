@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#10243f" />
+    <meta
+      name="description"
+      content="在浏览器里导入 MDX 意大利语词库，朗读单词并保存学习进度。"
+    />
+    <title>Parola · 意大利语单词卡</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2310243f'/%3E%3Cpath d='M20 16h19c8 0 13 5 13 12 0 8-5 13-14 13H30v9H20V16zm10 8v9h8c3 0 5-2 5-5 0-2-2-4-5-4h-8z' fill='%23f8f4e8'/%3E%3Ccircle cx='48' cy='48' r='6' fill='%23d94a3d'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="Parola 首页">
+          <span class="brand-mark" aria-hidden="true">P</span>
+          <span>
+            <strong>Parola</strong>
+            <small>意大利语单词卡</small>
+          </span>
+        </a>
+        <button id="change-dict" class="text-button" type="button" hidden>更换词库</button>
+      </header>
+
+      <main>
+        <section id="import-view" class="panel import-panel" aria-labelledby="import-title">
+          <div class="eyebrow">本地词库</div>
+          <h1 id="import-title">先导入一个 MDX 词库</h1>
+          <p class="lead">词库只在这台设备的浏览器中读取，不会上传。下次打开时会自动继续。</p>
+          <label class="file-button" for="dict-file">
+            <span>选择 MDX 文件</span>
+            <input id="dict-file" type="file" accept=".mdx,application/octet-stream" />
+          </label>
+          <p class="fine-print">建议先使用“意语5000基础词.mdx”。首次解析可能需要几秒钟。</p>
+        </section>
+
+        <section id="loading-view" class="panel loading-panel" aria-live="polite" hidden>
+          <div class="loader" aria-hidden="true"></div>
+          <h1>正在整理词库</h1>
+          <p id="loading-message">正在读取词条，请稍候……</p>
+        </section>
+
+        <section id="study-view" class="study-layout" hidden>
+          <div class="study-meta">
+            <div>
+              <span class="eyebrow">今日学习</span>
+              <h1 id="dict-name">我的意大利语词库</h1>
+            </div>
+            <div class="count-block" aria-label="学习统计">
+              <strong id="known-count">0</strong>
+              <span>已掌握</span>
+            </div>
+          </div>
+
+          <div class="progress-row">
+            <div class="progress-track" aria-hidden="true">
+              <div id="progress-bar" class="progress-bar"></div>
+            </div>
+            <span id="progress-label">0 / 0</span>
+          </div>
+
+          <article class="word-card" aria-live="polite">
+            <div class="card-topline">
+              <span id="word-position">第 1 个</span>
+              <button id="speak-button" class="icon-button" type="button" aria-label="朗读当前单词">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4 4 0 0 0-2-3.46v6.92A4 4 0 0 0 16.5 12zm0-7v2.06a6 6 0 0 1 0 9.88V19a8 8 0 0 0 0-14z" />
+                </svg>
+                <span>朗读</span>
+              </button>
+            </div>
+
+            <div class="word-stage">
+              <p id="current-word" class="current-word" lang="it">—</p>
+              <p id="word-hint" class="word-hint">先想一想它的意思</p>
+            </div>
+
+            <div id="definition-wrap" class="definition-wrap" hidden>
+              <div class="divider"></div>
+              <div id="definition" class="definition">正在查找释义……</div>
+            </div>
+          </article>
+
+          <div id="reveal-actions" class="actions single-action">
+            <button id="reveal-button" class="primary-button" type="button">查看释义</button>
+          </div>
+
+          <div id="grade-actions" class="actions grade-actions" hidden>
+            <button id="again-button" class="secondary-button danger" type="button">还不熟</button>
+            <button id="known-button" class="primary-button success" type="button">认识了</button>
+          </div>
+
+          <p id="dictionary-note" class="dictionary-note"></p>
+        </section>
+
+        <section id="error-view" class="panel error-panel" hidden aria-live="assertive">
+          <div class="eyebrow">没有成功读取</div>
+          <h1>这个词库暂时打不开</h1>
+          <p id="error-message">请换一个 MDX 文件再试一次。</p>
+          <label class="file-button compact" for="dict-file-error">
+            <span>重新选择</span>
+            <input id="dict-file-error" type="file" accept=".mdx,application/octet-stream" />
+          </label>
+        </section>
+      </main>
+
+      <footer>
+        <span>进度保存在当前浏览器中</span>
+        <span aria-hidden="true">·</span>
+        <span>换手机后需重新导入词库</span>
+      </footer>
+    </div>
+
+    <script src="conf.js"></script>
+    <script src="vendor/require.js" data-main="app"></script>
+  </body>
+</html>
