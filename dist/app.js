@@ -102,6 +102,8 @@ require(["mdict-parser"], function (MParser) {
     spellingFeedbackText: document.getElementById("spelling-feedback-text"),
     spellingAnswer: document.getElementById("spelling-answer"),
     completeActions: document.getElementById("complete-actions"),
+    learnFiveMore: document.getElementById("learn-five-more"),
+    reviewMore: document.getElementById("review-more"),
     refreshQueue: document.getElementById("refresh-queue"),
     dictionaryNote: document.getElementById("dictionary-note"),
     settingNew: document.getElementById("setting-new"),
@@ -165,7 +167,7 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function freshDaily(date) {
-    return { date: localDateKey(date), newWords: [], reviewCount: 0 };
+    return { date: localDateKey(date), newWords: [], reviewCount: 0, extraNew: 0, extraReview: 0 };
   }
 
   function freshProgress() {
@@ -177,6 +179,7 @@ require(["mdict-parser"], function (MParser) {
       reviewed: 0,
       cards: {},
       reviewLog: [],
+      studyQueue: [],
       pending: null,
       daily: freshDaily(),
       settings: Object.assign({}, DEFAULT_SETTINGS),
@@ -396,15 +399,27 @@ require(["mdict-parser"], function (MParser) {
           return entry && availableWords.has(entry.w) && typeof entry.t === "string";
         })
       : [];
-    progress.daily = saved.daily && saved.daily.date === localDateKey(now)
+    var sameDay = saved.daily && saved.daily.date === localDateKey(now);
+    progress.daily = sameDay
       ? {
           date: saved.daily.date,
           newWords: Array.isArray(saved.daily.newWords)
             ? saved.daily.newWords.filter(function (word) { return availableWords.has(word); })
             : [],
-          reviewCount: Math.max(0, Math.floor(Number(saved.daily.reviewCount) || 0))
+          reviewCount: Math.max(0, Math.floor(Number(saved.daily.reviewCount) || 0)),
+          extraNew: clampInteger(saved.daily.extraNew, 0, 1000, 0),
+          extraReview: clampInteger(saved.daily.extraReview, 0, 5000, 0)
         }
       : freshDaily(now);
+    progress.studyQueue = sameDay && Array.isArray(saved.studyQueue)
+      ? saved.studyQueue.slice(0, 100).map(function (item) {
+          if (item && item.type === "new") return { type: "new" };
+          if (item && item.type === "review" && availableWords.has(item.word) && hasOwn(progress.cards, item.word)) {
+            return { type: "review", word: item.word };
+          }
+          return null;
+        }).filter(Boolean)
+      : [];
     if (saved.pending && availableWords.has(saved.pending.word)) {
       if (!hasOwn(progress.cards, saved.pending.word)) progress.cards[saved.pending.word] = freshRecord(now);
       progress.pending = {
@@ -422,7 +437,10 @@ require(["mdict-parser"], function (MParser) {
 
   function ensureDaily() {
     var today = localDateKey(new Date());
-    if (!state.progress.daily || state.progress.daily.date !== today) state.progress.daily = freshDaily();
+    if (!state.progress.daily || state.progress.daily.date !== today) {
+      state.progress.daily = freshDaily();
+      state.progress.studyQueue = [];
+    }
   }
 
   function openDatabase() {
@@ -739,6 +757,37 @@ require(["mdict-parser"], function (MParser) {
     return null;
   }
 
+  function dailyNewLimit() {
+    return state.progress.settings.dailyNew + Math.max(0, Number(state.progress.daily.extraNew) || 0);
+  }
+
+  function dailyReviewLimit() {
+    return state.progress.settings.dailyReview + Math.max(0, Number(state.progress.daily.extraReview) || 0);
+  }
+
+  function removeQueuedReview(word) {
+    var index = state.progress.studyQueue.findIndex(function (item) {
+      return item.type === "review" && item.word === word;
+    });
+    if (index >= 0) state.progress.studyQueue.splice(index, 1);
+  }
+
+  function nextQueuedCard(now) {
+    while (state.progress.studyQueue.length) {
+      var item = state.progress.studyQueue.shift();
+      if (item.type === "new") {
+        var unseen = nextUnseenWord(now);
+        if (unseen) return { word: unseen.word, record: unseen.record, mode: "meaning" };
+      } else if (item.type === "review") {
+        var record = getRecord(item.word);
+        if (record && Number(record.fsrs.reps) > 0) {
+          return { word: item.word, record: record, mode: chooseMode(record) };
+        }
+      }
+    }
+    return null;
+  }
+
   function selectNextCard(now) {
     ensureDaily();
     var pending = state.progress.pending;
@@ -751,12 +800,22 @@ require(["mdict-parser"], function (MParser) {
         var cardState = Number(item.record.fsrs.state);
         return cardState === window.FSRS.State.Learning || cardState === window.FSRS.State.Relearning;
       });
-      if (urgent || state.progress.daily.reviewCount < state.progress.settings.dailyReview) {
-        var selectedDue = urgent || due[0];
+      if (urgent) {
+        removeQueuedReview(urgent.word);
+        return { word: urgent.word, record: urgent.record, mode: chooseMode(urgent.record) };
+      }
+    }
+    if (state.progress.studyQueue.length) {
+      var queued = nextQueuedCard(now);
+      if (queued) return queued;
+    }
+    if (due.length) {
+      if (state.progress.daily.reviewCount < dailyReviewLimit()) {
+        var selectedDue = due[0];
         return { word: selectedDue.word, record: selectedDue.record, mode: chooseMode(selectedDue.record) };
       }
     }
-    if (state.progress.daily.newWords.length < state.progress.settings.dailyNew) {
+    if (state.progress.daily.newWords.length < dailyNewLimit()) {
       var unseen = nextUnseenWord(now);
       if (unseen) return { word: unseen.word, record: unseen.record, mode: "meaning" };
     }
@@ -932,7 +991,78 @@ require(["mdict-parser"], function (MParser) {
     elements.knownCount.textContent = stable;
     elements.progressLabel.textContent = touched + " / " + total;
     elements.progressBar.style.width = percent.toFixed(2) + "%";
-    elements.dailySummary.textContent = "今日新词 " + state.progress.daily.newWords.length + " / " + state.progress.settings.dailyNew + " · 复习 " + state.progress.daily.reviewCount + " / " + state.progress.settings.dailyReview + " · 当前到期 " + countDue(new Date());
+    elements.dailySummary.textContent = "今日新词 " + state.progress.daily.newWords.length + " / " + dailyNewLimit() + " · 复习 " + state.progress.daily.reviewCount + " / " + dailyReviewLimit() + " · 当前到期 " + countDue(new Date());
+  }
+
+  function optionalReviewWords(count, now) {
+    var todayWords = new Set(state.progress.daily.newWords || []);
+    var candidates = Object.keys(state.progress.cards).map(function (word) {
+      return { word: word, record: state.progress.cards[word] };
+    }).filter(function (item) {
+      return Number(item.record.fsrs.reps) > 0 && (!state.progress.pending || state.progress.pending.word !== item.word);
+    });
+    candidates.sort(function (a, b) {
+      var dueA = cardIsDue(a.record, now) ? 0 : 1;
+      var dueB = cardIsDue(b.record, now) ? 0 : 1;
+      var ratingA = Number(a.record.lastRating) || 5;
+      var ratingB = Number(b.record.lastRating) || 5;
+      var failuresA = (Number(a.record.stats.meaningFailures) || 0) + (Number(a.record.stats.spellingFailures) || 0);
+      var failuresB = (Number(b.record.stats.meaningFailures) || 0) + (Number(b.record.stats.spellingFailures) || 0);
+      var stabilityA = Number(a.record.fsrs.stability) || 0;
+      var stabilityB = Number(b.record.fsrs.stability) || 0;
+      var lastA = a.record.fsrs.last_review ? validDate(a.record.fsrs.last_review).getTime() : 0;
+      var lastB = b.record.fsrs.last_review ? validDate(b.record.fsrs.last_review).getTime() : 0;
+      return dueA - dueB || ratingA - ratingB || failuresB - failuresA || stabilityA - stabilityB || lastA - lastB;
+    });
+    var older = candidates.filter(function (item) { return !todayWords.has(item.word); });
+    var recent = candidates.filter(function (item) { return todayWords.has(item.word); });
+    return older.concat(recent).slice(0, count).map(function (item) { return item.word; });
+  }
+
+  function unseenWordCount() {
+    return state.words.reduce(function (count, word) {
+      return count + (hasOwn(state.progress.cards, word) ? 0 : 1);
+    }, 0);
+  }
+
+  function startMixedExtraSession() {
+    ensureDaily();
+    var newCount = Math.min(5, unseenWordCount());
+    if (!newCount) {
+      setProgressStatus("当前词库已经没有尚未学习的新词。", true);
+      return;
+    }
+    var reviewWords = optionalReviewWords(newCount, new Date());
+    var queue = [];
+    for (var index = 0; index < newCount; index += 1) {
+      queue.push({ type: "new" });
+      if (reviewWords[index]) queue.push({ type: "review", word: reviewWords[index] });
+    }
+    state.progress.daily.extraNew += newCount;
+    state.progress.daily.extraReview += reviewWords.length;
+    state.progress.studyQueue = state.progress.studyQueue.concat(queue);
+    saveProgress();
+    setProgressStatus(
+      "已加入 " + newCount + " 个新词，并穿插 " + reviewWords.length + " 个较薄弱旧词。额外额度只在今天有效。",
+      false
+    );
+    showNextWord();
+  }
+
+  function startReviewExtraSession() {
+    ensureDaily();
+    var reviewWords = optionalReviewWords(10, new Date());
+    if (!reviewWords.length) {
+      setProgressStatus("目前还没有可以复习的旧词；先完成一些新词后再来。", true);
+      return;
+    }
+    state.progress.daily.extraReview += reviewWords.length;
+    state.progress.studyQueue = state.progress.studyQueue.concat(reviewWords.map(function (word) {
+      return { type: "review", word: word };
+    }));
+    saveProgress();
+    setProgressStatus("已加入 " + reviewWords.length + " 个较薄弱旧词；到期、曾答错和稳定度较低的词会优先。", false);
+    showNextWord();
   }
 
   function libraryStatus(word, record, now) {
@@ -1348,6 +1478,8 @@ require(["mdict-parser"], function (MParser) {
     button.addEventListener("click", function () { rateCurrent(Number(button.dataset.rating)); });
   });
   elements.speakButton.addEventListener("click", speakCurrentWord);
+  elements.learnFiveMore.addEventListener("click", startMixedExtraSession);
+  elements.reviewMore.addEventListener("click", startReviewExtraSession);
   elements.refreshQueue.addEventListener("click", showNextWord);
   elements.settingNew.addEventListener("change", applySettings);
   elements.settingReview.addEventListener("change", applySettings);

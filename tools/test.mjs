@@ -49,6 +49,9 @@ assert.match(html, /data-rating="1"/);
 assert.match(html, /id="spelling-form"/);
 assert.match(html, /id="open-library-progress"/);
 assert.match(html, /id="library-progress-dialog"/);
+assert.match(html, /id="learn-five-more"/);
+assert.match(html, /id="review-more"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
+assert.match(appSource, /function startMixedExtraSession\(\)/);
 
 console.log("Parola smoke tests passed.");
