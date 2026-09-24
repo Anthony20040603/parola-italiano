@@ -16,7 +16,7 @@ require(["mdict-parser"], function (MParser) {
   var DICTIONARY_SET_KEY = "dictionary-set";
   var DICTIONARY_FILE_PREFIX = "dictionary:";
   var PROGRESS_FORMAT = "parola-progress";
-  var PROGRESS_VERSION = 3;
+  var PROGRESS_VERSION = 4;
   var SHUFFLE_ALGORITHM = "mulberry32-fisher-yates-v1";
   var FSRS_ALGORITHM = "FSRS-6";
   var FSRS_LIBRARY_VERSION = "5.4.2";
@@ -57,7 +57,8 @@ require(["mdict-parser"], function (MParser) {
     saveChain: Promise.resolve(),
     completed: false,
     completionTimer: null,
-    libraryVisibleLimit: LIBRARY_PAGE_SIZE
+    libraryVisibleLimit: LIBRARY_PAGE_SIZE,
+    quickRatingWord: ""
   };
 
   var elements = {
@@ -86,6 +87,16 @@ require(["mdict-parser"], function (MParser) {
     progressBar: document.getElementById("progress-bar"),
     progressLabel: document.getElementById("progress-label"),
     dailySummary: document.getElementById("daily-summary"),
+    openCheckin: document.getElementById("open-checkin"),
+    checkinStreak: document.getElementById("checkin-streak"),
+    checkinDialog: document.getElementById("checkin-dialog"),
+    closeCheckin: document.getElementById("close-checkin"),
+    checkinOverview: document.getElementById("checkin-overview"),
+    checkinHistory: document.getElementById("checkin-history"),
+    makeupActions: document.getElementById("makeup-actions"),
+    makeupDate: document.getElementById("makeup-date"),
+    makeupSubmit: document.getElementById("makeup-submit"),
+    makeupStatus: document.getElementById("makeup-status"),
     openLibraryProgress: document.getElementById("open-library-progress"),
     libraryProgressDialog: document.getElementById("library-progress-dialog"),
     closeLibraryProgress: document.getElementById("close-library-progress"),
@@ -97,6 +108,11 @@ require(["mdict-parser"], function (MParser) {
     libraryProgressList: document.getElementById("library-progress-list"),
     libraryProgressEmpty: document.getElementById("library-progress-empty"),
     libraryProgressMore: document.getElementById("library-progress-more"),
+    quickRatingDialog: document.getElementById("quick-rating-dialog"),
+    closeQuickRating: document.getElementById("close-quick-rating"),
+    quickRatingTitle: document.getElementById("quick-rating-title"),
+    quickRatingNote: document.getElementById("quick-rating-note"),
+    quickRatingStatus: document.getElementById("quick-rating-status"),
     wordPosition: document.getElementById("word-position"),
     currentWord: document.getElementById("current-word"),
     wordHint: document.getElementById("word-hint"),
@@ -116,6 +132,9 @@ require(["mdict-parser"], function (MParser) {
     spellingFeedback: document.getElementById("spelling-feedback"),
     spellingFeedbackText: document.getElementById("spelling-feedback-text"),
     spellingAnswer: document.getElementById("spelling-answer"),
+    completionCelebration: document.getElementById("completion-celebration"),
+    completionCheckinMessage: document.getElementById("completion-checkin-message"),
+    completionStreakMessage: document.getElementById("completion-streak-message"),
     completeActions: document.getElementById("complete-actions"),
     learnFiveMore: document.getElementById("learn-five-more"),
     reviewMore: document.getElementById("review-more"),
@@ -128,6 +147,7 @@ require(["mdict-parser"], function (MParser) {
   };
 
   var gradeButtons = Array.prototype.slice.call(document.querySelectorAll("[data-rating]"));
+  var quickRatingButtons = Array.prototype.slice.call(document.querySelectorAll("[data-quick-rating]"));
 
   function showView(viewName) {
     ["importView", "loadingView", "studyView", "errorView"].forEach(function (name) {
@@ -347,8 +367,26 @@ require(["mdict-parser"], function (MParser) {
     return shifted.toISOString().slice(0, 10);
   }
 
+  function dateFromLocalKey(key) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ""));
+    if (!match) return null;
+    var date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+    return localDateKey(date) === key ? date : null;
+  }
+
+  function shiftLocalDateKey(key, days) {
+    var date = dateFromLocalKey(key);
+    if (!date) return "";
+    date.setDate(date.getDate() + Number(days || 0));
+    return localDateKey(date);
+  }
+
   function freshDaily(date) {
     return { date: localDateKey(date), newWords: [], reviewCount: 0, extraNew: 0, extraReview: 0 };
+  }
+
+  function freshCheckins() {
+    return { dates: {}, lastCelebratedDate: "" };
   }
 
   function freshProgress() {
@@ -363,6 +401,7 @@ require(["mdict-parser"], function (MParser) {
       studyQueue: [],
       pending: null,
       daily: freshDaily(),
+      checkins: freshCheckins(),
       settings: Object.assign({}, DEFAULT_SETTINGS),
       scheduler: {
         algorithm: FSRS_ALGORITHM,
@@ -561,6 +600,23 @@ require(["mdict-parser"], function (MParser) {
     return progress;
   }
 
+  function sanitizeCheckins(value, now) {
+    var source = value && typeof value === "object" ? value : {};
+    var datesSource = source.dates && typeof source.dates === "object" ? source.dates : {};
+    var today = localDateKey(now || new Date());
+    var checkins = freshCheckins();
+    Object.keys(datesSource).sort().forEach(function (key) {
+      if (!dateFromLocalKey(key) || key > today) return;
+      var entry = datesSource[key] && typeof datesSource[key] === "object" ? datesSource[key] : {};
+      checkins.dates[key] = {
+        type: entry.type === "makeup" ? "makeup" : "earned",
+        at: typeof entry.at === "string" ? entry.at : key + "T12:00:00"
+      };
+    });
+    checkins.lastCelebratedDate = hasOwn(checkins.dates, source.lastCelebratedDate) ? source.lastCelebratedDate : "";
+    return checkins;
+  }
+
   function normalizeProgress(saved) {
     if (!saved || typeof saved !== "object" || !saved.cards || Number(saved.schemaVersion) < 2) {
       return migrateLegacyProgress(saved || {});
@@ -572,6 +628,7 @@ require(["mdict-parser"], function (MParser) {
     progress.cursor = Math.max(0, Math.floor(Number(saved.cursor) || 0));
     progress.reviewed = Math.max(0, Math.floor(Number(saved.reviewed) || 0));
     progress.settings = sanitizeSettings(saved.settings);
+    progress.checkins = sanitizeCheckins(saved.checkins, now);
     Object.keys(saved.cards).forEach(function (word) {
       if (availableWords.has(word)) progress.cards[word] = sanitizeRecord(saved.cards[word], now);
     });
@@ -622,6 +679,174 @@ require(["mdict-parser"], function (MParser) {
       state.progress.daily = freshDaily();
       state.progress.studyQueue = [];
     }
+  }
+
+  function calculateCheckinStats(checkins, todayKey) {
+    var dates = checkins && checkins.dates ? checkins.dates : {};
+    var anchor = hasOwn(dates, todayKey) ? todayKey : shiftLocalDateKey(todayKey, -1);
+    var current = 0;
+    var cursor = anchor;
+    while (cursor && hasOwn(dates, cursor)) {
+      current += 1;
+      cursor = shiftLocalDateKey(cursor, -1);
+    }
+    var longest = 0;
+    var run = 0;
+    var previous = "";
+    Object.keys(dates).sort().forEach(function (key) {
+      run = previous && shiftLocalDateKey(previous, 1) === key ? run + 1 : 1;
+      longest = Math.max(longest, run);
+      previous = key;
+    });
+    return {
+      current: current,
+      longest: longest,
+      total: Object.keys(dates).length,
+      todayChecked: hasOwn(dates, todayKey)
+    };
+  }
+
+  function hasStudyActivityToday() {
+    if (!state.progress) return false;
+    var today = localDateKey(new Date());
+    if (state.progress.daily && state.progress.daily.date === today
+      && ((state.progress.daily.newWords || []).length || Number(state.progress.daily.reviewCount) > 0)) return true;
+    return (state.progress.reviewLog || []).some(function (entry) {
+      return entry && localDateKey(validDate(entry.t)) === today;
+    });
+  }
+
+  function recordTodayCheckin() {
+    if (!state.progress || !hasStudyActivityToday()) return false;
+    if (!state.progress.checkins) state.progress.checkins = freshCheckins();
+    var today = localDateKey(new Date());
+    if (hasOwn(state.progress.checkins.dates, today)) return false;
+    state.progress.checkins.dates[today] = { type: "earned", at: new Date().toISOString() };
+    state.progress.checkins.lastCelebratedDate = today;
+    return true;
+  }
+
+  function availableMakeupDates(todayKey) {
+    var dates = state.progress && state.progress.checkins ? state.progress.checkins.dates : {};
+    return [-2, -1].map(function (offset) { return shiftLocalDateKey(todayKey, offset); })
+      .filter(function (key) { return key && !hasOwn(dates, key); });
+  }
+
+  function isMakeupDateAllowed(key, todayKey, dates) {
+    return Boolean(dateFromLocalKey(key)) && key < todayKey && !hasOwn(dates, key);
+  }
+
+  function checkinDateLabel(key) {
+    var date = dateFromLocalKey(key);
+    return date ? date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", weekday: "short" }) : key;
+  }
+
+  function updateCheckinEntry() {
+    if (!state.progress) return;
+    if (!state.progress.checkins) state.progress.checkins = freshCheckins();
+    var stats = calculateCheckinStats(state.progress.checkins, localDateKey(new Date()));
+    elements.checkinStreak.textContent = "连续打卡 " + stats.current + " 天";
+  }
+
+  function appendCheckinMetric(fragment, value, label) {
+    var item = document.createElement("div");
+    var strong = document.createElement("strong");
+    var span = document.createElement("span");
+    strong.textContent = value;
+    span.textContent = label;
+    item.appendChild(strong);
+    item.appendChild(span);
+    fragment.appendChild(item);
+  }
+
+  function renderCheckinDialog() {
+    if (!state.progress) return;
+    if (!state.progress.checkins) state.progress.checkins = freshCheckins();
+    var today = localDateKey(new Date());
+    var stats = calculateCheckinStats(state.progress.checkins, today);
+    elements.checkinOverview.textContent = "";
+    var overview = document.createDocumentFragment();
+    appendCheckinMetric(overview, stats.current + " 天", "当前连续");
+    appendCheckinMetric(overview, stats.longest + " 天", "最长连续");
+    appendCheckinMetric(overview, stats.total + " 天", "累计打卡");
+    elements.checkinOverview.appendChild(overview);
+
+    elements.checkinHistory.textContent = "";
+    var history = document.createDocumentFragment();
+    for (var offset = -13; offset <= 0; offset += 1) {
+      var key = shiftLocalDateKey(today, offset);
+      var entry = state.progress.checkins.dates[key];
+      var item = document.createElement("div");
+      var day = document.createElement("strong");
+      var mark = document.createElement("span");
+      item.className = "checkin-day" + (entry ? " is-checked" : " is-missed") + (entry && entry.type === "makeup" ? " is-makeup" : "") + (offset === 0 ? " is-today" : "");
+      day.textContent = checkinDateLabel(key);
+      mark.textContent = entry ? entry.type === "makeup" ? "补" : "✓" : "—";
+      item.title = entry ? (entry.type === "makeup" ? "补打卡" : "完成学习") : "未打卡";
+      item.appendChild(mark);
+      item.appendChild(day);
+      history.appendChild(item);
+    }
+    elements.checkinHistory.appendChild(history);
+
+    elements.makeupActions.textContent = "";
+    var missing = availableMakeupDates(today);
+    if (!missing.length) {
+      var complete = document.createElement("span");
+      complete.className = "makeup-complete";
+      complete.textContent = "最近两天均已有打卡记录";
+      elements.makeupActions.appendChild(complete);
+    } else {
+      missing.forEach(function (key) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "utility-button makeup-button";
+        button.textContent = "补记 " + checkinDateLabel(key);
+        button.addEventListener("click", function () { applyMakeupCheckin(key); });
+        elements.makeupActions.appendChild(button);
+      });
+    }
+    var latestMakeupDate = shiftLocalDateKey(today, -1);
+    elements.makeupDate.max = latestMakeupDate;
+    if (!elements.makeupDate.value || elements.makeupDate.value >= today) elements.makeupDate.value = latestMakeupDate;
+    updateCheckinEntry();
+  }
+
+  function applyMakeupCheckin(key) {
+    var today = localDateKey(new Date());
+    if (!dateFromLocalKey(key) || key >= today) {
+      elements.makeupStatus.textContent = "请选择今天以前的有效日期。";
+      elements.makeupStatus.classList.add("status-error");
+      elements.makeupStatus.hidden = false;
+      return;
+    }
+    if (!isMakeupDateAllowed(key, today, state.progress.checkins.dates)) {
+      elements.makeupStatus.textContent = checkinDateLabel(key) + " 已经有打卡记录，不需要重复补记。";
+      elements.makeupStatus.classList.add("status-error");
+      elements.makeupStatus.hidden = false;
+      return;
+    }
+    state.progress.checkins.dates[key] = { type: "makeup", at: new Date().toISOString() };
+    saveProgress();
+    renderCheckinDialog();
+    elements.makeupStatus.textContent = "已补记 " + checkinDateLabel(key) + "。学习量与 FSRS 记录没有改变。";
+    elements.makeupStatus.classList.remove("status-error");
+    elements.makeupStatus.hidden = false;
+  }
+
+  function openCheckinDialog() {
+    elements.makeupStatus.hidden = true;
+    renderCheckinDialog();
+    if (typeof elements.checkinDialog.showModal === "function") {
+      if (!elements.checkinDialog.open) elements.checkinDialog.showModal();
+    } else {
+      elements.checkinDialog.setAttribute("open", "");
+    }
+  }
+
+  function closeCheckinDialog() {
+    if (typeof elements.checkinDialog.close === "function") elements.checkinDialog.close();
+    else elements.checkinDialog.removeAttribute("open");
   }
 
   function openDatabase() {
@@ -844,7 +1069,7 @@ require(["mdict-parser"], function (MParser) {
       var payload;
       try { payload = JSON.parse(text); }
       catch (error) { throw new Error("这不是有效的 JSON 进度文件。"); }
-      if (!payload || payload.format !== PROGRESS_FORMAT || [1, 2, 3].indexOf(Number(payload.version)) < 0) {
+      if (!payload || payload.format !== PROGRESS_FORMAT || [1, 2, 3, 4].indexOf(Number(payload.version)) < 0) {
         throw new Error("这不是受支持的 Parola 进度文件。");
       }
       if (!payload.dictionary || !payload.progress) throw new Error("进度文件缺少词库或学习记录。");
@@ -1142,6 +1367,7 @@ require(["mdict-parser"], function (MParser) {
     elements.spellingFeedback.className = "spelling-feedback";
     elements.spellingFeedbackText.textContent = "";
     elements.spellingAnswer.textContent = "";
+    elements.completionCelebration.hidden = true;
     state.referenceRenderToken += 1;
     elements.referenceDictionaries.open = false;
     elements.referenceDictionaries.hidden = true;
@@ -1469,11 +1695,17 @@ require(["mdict-parser"], function (MParser) {
     state.completed = true;
     state.currentWord = "";
     state.progress.pending = null;
-    elements.wordPosition.textContent = "FSRS 今日安排";
-    elements.currentWord.textContent = "今日任务完成";
+    var newlyChecked = recordTodayCheckin();
+    var checkinStats = calculateCheckinStats(state.progress.checkins, localDateKey(now));
+    elements.wordPosition.textContent = checkinStats.todayChecked ? "今日学习" : "FSRS 今日安排";
+    elements.currentWord.textContent = checkinStats.todayChecked ? "恭喜，今日学习完成！" : "今日任务完成";
     elements.currentWord.classList.add("completion-title");
     elements.speakButton.hidden = true;
     elements.completeActions.hidden = false;
+    elements.completionCelebration.hidden = !checkinStats.todayChecked;
+    elements.completionCheckinMessage.textContent = newlyChecked ? "今天已成功打卡" : "今天已经打过卡";
+    elements.completionStreakMessage.textContent = "连续学习 " + checkinStats.current + " 天 · 累计 " + checkinStats.total + " 天";
+    updateCheckinEntry();
     var due = dueRecords(now);
     var future = Object.keys(state.progress.cards).map(function (word) {
       return validDate(state.progress.cards[word].fsrs.due);
@@ -1508,6 +1740,7 @@ require(["mdict-parser"], function (MParser) {
     elements.progressLabel.textContent = touched + " / " + total;
     elements.progressBar.style.width = percent.toFixed(2) + "%";
     elements.dailySummary.textContent = "今日新词 " + state.progress.daily.newWords.length + " / " + dailyNewLimit() + " · 复习 " + state.progress.daily.reviewCount + " / " + dailyReviewLimit() + " · 当前到期 " + countDue(new Date());
+    updateCheckinEntry();
   }
 
   function optionalReviewWords(count, now) {
@@ -1684,14 +1917,21 @@ require(["mdict-parser"], function (MParser) {
     var duePrimary = document.createElement("strong");
     var dueSecondary = document.createElement("small");
     var dueText = libraryDueText(entry, now);
+    var quickRate = document.createElement("button");
 
     row.className = "library-progress-row";
     wordCell.className = "library-progress-word";
     word.textContent = entry.word;
     word.lang = "it";
     practice.textContent = libraryPracticeText(entry.record);
+    quickRate.type = "button";
+    quickRate.className = "library-quick-rate";
+    quickRate.textContent = state.progress.pending && state.progress.pending.word === entry.word ? "正在学习" : "直接评分";
+    quickRate.disabled = state.progress.pending && state.progress.pending.word === entry.word;
+    quickRate.addEventListener("click", function () { openQuickRating(entry.word); });
     wordCell.appendChild(word);
     wordCell.appendChild(practice);
+    wordCell.appendChild(quickRate);
 
     status.className = "library-status-badge status-" + entry.status.key;
     status.textContent = entry.status.label;
@@ -1766,6 +2006,25 @@ require(["mdict-parser"], function (MParser) {
   function closeLibraryProgress() {
     if (typeof elements.libraryProgressDialog.close === "function") elements.libraryProgressDialog.close();
     else elements.libraryProgressDialog.removeAttribute("open");
+  }
+
+  function openQuickRating(word) {
+    if (!word || state.progress.pending && state.progress.pending.word === word) return;
+    state.quickRatingWord = word;
+    elements.quickRatingTitle.textContent = word;
+    elements.quickRatingStatus.hidden = true;
+    elements.quickRatingNote.textContent = "这会作为一次“看意大利语记中文”的学习记录，并由 FSRS 安排下次复习。";
+    if (typeof elements.quickRatingDialog.showModal === "function") {
+      if (!elements.quickRatingDialog.open) elements.quickRatingDialog.showModal();
+    } else {
+      elements.quickRatingDialog.setAttribute("open", "");
+    }
+  }
+
+  function closeQuickRating() {
+    state.quickRatingWord = "";
+    if (typeof elements.quickRatingDialog.close === "function") elements.quickRatingDialog.close();
+    else elements.quickRatingDialog.removeAttribute("open");
   }
 
   function resetLibraryList() {
@@ -1883,6 +2142,52 @@ require(["mdict-parser"], function (MParser) {
 
   function ratingName(rating) { return ({ 1: "忘了", 2: "勉强想起", 3: "正常想起", 4: "非常熟练" })[rating] || ""; }
 
+  function applyQuickRating(rating) {
+    var word = state.quickRatingWord;
+    if (!word || !state.progress || rating < 1 || rating > 4) return;
+    ensureDaily();
+    var now = new Date();
+    var record = getRecord(word);
+    if (!record) {
+      record = freshRecord(now);
+      state.progress.cards[word] = record;
+      if (state.progress.daily.newWords.indexOf(word) < 0) state.progress.daily.newWords.push(word);
+    }
+    var previousCard = hydrateCard(record.fsrs, now);
+    var wasReview = previousCard.reps > 0;
+    updateModeAfterRating(record, "meaning", rating);
+    var nextCard = createScheduler(state.progress.settings).next(previousCard, now, rating).card;
+    if (rating !== window.FSRS.Rating.Again && record.mode.meaningPassed && !record.mode.spellingPassed) {
+      var companionDue = new Date(now.getTime() + COMPANION_DELAY_MS);
+      if (validDate(nextCard.due).getTime() > companionDue.getTime()) {
+        nextCard.due = companionDue;
+        nextCard.scheduled_days = 0;
+      }
+    }
+    record.fsrs = serializeCard(nextCard);
+    record.lastRating = rating;
+    record.lastResult = "manual-library";
+    state.progress.reviewed += 1;
+    if (wasReview) state.progress.daily.reviewCount += 1;
+    state.progress.reviewLog.push({
+      w: word,
+      t: now.toISOString(),
+      m: "meaning",
+      g: rating,
+      r: record.lastResult,
+      ms: 0,
+      due: record.fsrs.due,
+      s: Number(record.fsrs.stability.toFixed(6)),
+      d: Number(record.fsrs.difficulty.toFixed(6))
+    });
+    if (state.progress.reviewLog.length > MAX_REVIEW_LOGS) state.progress.reviewLog.splice(0, state.progress.reviewLog.length - MAX_REVIEW_LOGS);
+    saveProgress();
+    setProgressStatus("已在词库中将“" + word + "”标记为“" + ratingName(rating) + "”，下次预计 " + formatDue(record.fsrs.due, now) + "。", false);
+    updateStats();
+    renderLibraryProgress();
+    closeQuickRating();
+  }
+
   function rateCurrent(rating) {
     if (!state.currentWord || elements.gradeActions.hidden) return;
     var now = new Date();
@@ -1978,6 +2283,12 @@ require(["mdict-parser"], function (MParser) {
   elements.studyProgressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.exportProgress.addEventListener("click", exportProgressFile);
   elements.importProgress.addEventListener("click", function () { elements.studyProgressFileInput.click(); });
+  elements.openCheckin.addEventListener("click", openCheckinDialog);
+  elements.closeCheckin.addEventListener("click", closeCheckinDialog);
+  elements.checkinDialog.addEventListener("click", function (event) {
+    if (event.target === elements.checkinDialog) closeCheckinDialog();
+  });
+  elements.makeupSubmit.addEventListener("click", function () { applyMakeupCheckin(elements.makeupDate.value); });
   elements.openLibraryProgress.addEventListener("click", openLibraryProgress);
   elements.closeLibraryProgress.addEventListener("click", closeLibraryProgress);
   elements.libraryProgressDialog.addEventListener("click", function (event) {
@@ -1989,6 +2300,13 @@ require(["mdict-parser"], function (MParser) {
   elements.libraryProgressMore.addEventListener("click", function () {
     state.libraryVisibleLimit += LIBRARY_PAGE_SIZE;
     renderLibraryProgress();
+  });
+  elements.closeQuickRating.addEventListener("click", closeQuickRating);
+  elements.quickRatingDialog.addEventListener("click", function (event) {
+    if (event.target === elements.quickRatingDialog) closeQuickRating();
+  });
+  quickRatingButtons.forEach(function (button) {
+    button.addEventListener("click", function () { applyQuickRating(Number(button.dataset.quickRating)); });
   });
   elements.changeDict.addEventListener("click", function () {
     if (state.completionTimer) {

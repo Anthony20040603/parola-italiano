@@ -84,6 +84,14 @@
             <span id="progress-label">0 / 0</span>
           </div>
           <p id="daily-summary" class="daily-summary">今日新词 0 / 20 · 复习 0 / 80</p>
+          <button id="open-checkin" class="checkin-entry" type="button">
+            <span class="checkin-entry-icon" aria-hidden="true">✓</span>
+            <span>
+              <strong id="checkin-streak">连续打卡 0 天</strong>
+              <small>查看记录或补记任意过去日期</small>
+            </span>
+            <span class="entry-arrow" aria-hidden="true">›</span>
+          </button>
           <button id="open-library-progress" class="library-progress-entry" type="button">
             <span>
               <strong>查看词库进度</strong>
@@ -106,6 +114,16 @@
             <div class="word-stage">
               <p id="current-word" class="current-word" lang="it">—</p>
               <p id="word-hint" class="word-hint">先想一想它的意思</p>
+
+              <div id="completion-celebration" class="completion-celebration" hidden>
+                <div class="fireworks" aria-hidden="true">
+                  <span class="firework firework-one"></span>
+                  <span class="firework firework-two"></span>
+                  <span class="firework firework-three"></span>
+                </div>
+                <strong id="completion-checkin-message">今天已打卡</strong>
+                <span id="completion-streak-message">连续学习 1 天</span>
+              </div>
 
               <form id="spelling-form" class="spelling-form" hidden>
                 <input
@@ -259,6 +277,54 @@
             <div id="library-progress-list" class="library-progress-list"></div>
             <p id="library-progress-empty" class="library-progress-empty" hidden>没有找到符合条件的单词。</p>
             <button id="library-progress-more" class="utility-button library-progress-more" type="button" hidden>加载更多</button>
+          </div>
+        </dialog>
+
+        <dialog id="checkin-dialog" class="checkin-dialog" aria-labelledby="checkin-title">
+          <div class="checkin-sheet">
+            <header class="checkin-header">
+              <div>
+                <span class="eyebrow">学习记录</span>
+                <h2 id="checkin-title">连续打卡</h2>
+              </div>
+              <button id="close-checkin" class="dialog-close" type="button" aria-label="关闭打卡记录">×</button>
+            </header>
+            <div id="checkin-overview" class="checkin-overview"></div>
+            <div id="checkin-history" class="checkin-history" aria-label="最近十四天打卡记录"></div>
+            <section class="makeup-section" aria-labelledby="makeup-title">
+              <h3 id="makeup-title">补打卡</h3>
+              <p>如果恢复的是较早的进度备份，可以补记任意过去日期。补卡只修复连续记录，不会增加学习量或改变复习安排。</p>
+              <div class="makeup-date-form">
+                <label for="makeup-date">选择需要补记的日期</label>
+                <div>
+                  <input id="makeup-date" type="date" />
+                  <button id="makeup-submit" class="primary-button compact-button" type="button">补记这一天</button>
+                </div>
+              </div>
+              <p class="makeup-shortcut-label">最近两天快捷补记</p>
+              <div id="makeup-actions" class="makeup-actions"></div>
+              <p id="makeup-status" class="inline-status" role="status" hidden></p>
+            </section>
+          </div>
+        </dialog>
+
+        <dialog id="quick-rating-dialog" class="quick-rating-dialog" aria-labelledby="quick-rating-title">
+          <div class="quick-rating-sheet">
+            <header class="quick-rating-header">
+              <div>
+                <span class="eyebrow">词库直接评分</span>
+                <h2 id="quick-rating-title" lang="it">—</h2>
+              </div>
+              <button id="close-quick-rating" class="dialog-close" type="button" aria-label="关闭直接评分">×</button>
+            </header>
+            <p id="quick-rating-note" class="quick-rating-note">这会作为一次“看意大利语记中文”的学习记录，并由 FSRS 安排下次复习。</p>
+            <div class="quick-rating-actions">
+              <button class="grade-button rating-again" data-quick-rating="1" type="button"><strong>完全不知道</strong><small>重新开始记忆</small></button>
+              <button class="grade-button rating-hard" data-quick-rating="2" type="button"><strong>印象模糊</strong><small>勉强想起</small></button>
+              <button class="grade-button rating-good" data-quick-rating="3" type="button"><strong>大概知道</strong><small>正常想起</small></button>
+              <button class="grade-button rating-easy" data-quick-rating="4" type="button"><strong>完全知道</strong><small>非常熟练</small></button>
+            </div>
+            <p id="quick-rating-status" class="inline-status" role="status" hidden></p>
           </div>
         </dialog>
 

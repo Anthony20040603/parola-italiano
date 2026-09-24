@@ -65,6 +65,30 @@ assert.equal(again.due.getTime() - now.getTime(), 10 * 60 * 1000);
 assert.ok(good.due > again.due, "Good should schedule later than Again");
 assert.ok(easy.due > good.due, "Easy should schedule later than Good");
 
+const dateFunctions = appSource.match(
+  /  function localDateKey[\s\S]*?(?=\n  function freshDaily)/,
+);
+const makeupFunction = appSource.match(
+  /  function isMakeupDateAllowed[\s\S]*?(?=\n  function checkinDateLabel)/,
+);
+assert.ok(dateFunctions, "local date helpers should be present");
+assert.ok(makeupFunction, "unlimited makeup validation should be present");
+const makeupContext = {};
+vm.runInNewContext(
+  `${dateFunctions[0]}
+  function hasOwn(object, key) { return Object.prototype.hasOwnProperty.call(object || {}, key); }
+  ${makeupFunction[0]}
+  result = [
+    isMakeupDateAllowed("2026-09-01", "2026-09-25", {}),
+    isMakeupDateAllowed("2025-01-01", "2026-09-25", { "2025-01-01": { type: "makeup" } }),
+    isMakeupDateAllowed("2026-09-25", "2026-09-25", {}),
+    isMakeupDateAllowed("2026-09-26", "2026-09-25", {}),
+    isMakeupDateAllowed("not-a-date", "2026-09-25", {})
+  ];`,
+  makeupContext,
+);
+assert.deepEqual(Array.from(makeupContext.result), [true, false, false, false, false]);
+
 const fsrsScript = html.indexOf('src="vendor/ts-fsrs-5.4.2.umd.js"');
 const requireScript = html.indexOf('src="vendor/require.js"');
 assert.ok(fsrsScript >= 0 && fsrsScript < requireScript, "FSRS must load before the app bootstrap");
@@ -72,6 +96,10 @@ assert.match(html, /data-rating="1"/);
 assert.match(html, /id="spelling-form"/);
 assert.match(html, /id="open-library-progress"/);
 assert.match(html, /id="library-progress-dialog"/);
+assert.match(html, /id="open-checkin"/);
+assert.match(html, /id="completion-celebration"/);
+assert.match(html, /id="makeup-date"/);
+assert.match(html, /data-quick-rating="4"/);
 assert.match(html, /id="learn-five-more"/);
 assert.match(html, /id="review-more"/);
 assert.match(html, /id="dictionary-manager"/);
@@ -80,7 +108,9 @@ assert.match(html, /id="reference-dictionaries"/);
 assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function startMixedExtraSession\(\)/);
-assert.match(appSource, /var PROGRESS_VERSION = 3/);
+assert.match(appSource, /var PROGRESS_VERSION = 4/);
+assert.match(appSource, /function applyQuickRating\(rating\)/);
+assert.match(appSource, /lastResult = "manual-library"/);
 assert.match(appSource, /function rememberDictionarySet\(\)/);
 assert.match(appSource, /function restoreDictionarySet\(\)/);
 assert.match(appSource, /function loadReferenceLookup\(dictionary\)/);
