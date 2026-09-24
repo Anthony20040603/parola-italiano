@@ -38,6 +38,12 @@
             <span>选择 MDX 文件</span>
             <input id="dict-file" type="file" accept=".mdx,application/octet-stream" />
           </label>
+          <div class="import-divider"><span>换设备恢复时</span></div>
+          <label class="file-button outline-button" for="progress-file">
+            <span>先选择进度文件</span>
+            <input id="progress-file" type="file" accept=".json,application/json" />
+          </label>
+          <p id="import-status" class="inline-status" role="status" hidden></p>
           <p class="fine-print">建议先使用“意语5000基础词.mdx”。首次解析可能需要几秒钟。</p>
         </section>
 
@@ -98,6 +104,13 @@
           </div>
 
           <p id="dictionary-note" class="dictionary-note"></p>
+
+          <div class="progress-tools" aria-label="进度文件">
+            <button id="export-progress" class="utility-button" type="button">导出进度</button>
+            <button id="import-progress" class="utility-button" type="button">导入进度</button>
+            <input id="study-progress-file" type="file" accept=".json,application/json" hidden />
+          </div>
+          <p id="progress-status" class="inline-status study-status" role="status" hidden></p>
         </section>
 
         <section id="error-view" class="panel error-panel" hidden aria-live="assertive">
@@ -114,7 +127,7 @@
       <footer>
         <span>进度保存在当前浏览器中</span>
         <span aria-hidden="true">·</span>
-        <span>换手机后需重新导入词库</span>
+        <span>可导出进度文件，在其他设备恢复</span>
       </footer>
     </div>
 
