@@ -829,6 +829,11 @@ h1 {
   line-height: 1.55;
 }
 
+.dictionary-compatibility.status-error {
+  color: #9f3028;
+  background: var(--red-soft);
+}
+
 .actions {
   display: grid;
   gap: 12px;

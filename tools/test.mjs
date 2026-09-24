@@ -24,6 +24,29 @@ vm.runInNewContext(
 );
 assert.deepEqual(Array.from(spellingContext.result), ["exact", "accent", "accent", "wrong"]);
 
+const clueFunctions = appSource.match(
+  /  function escapeRegExp[\s\S]*?(?=\n  function compatibilitySample)/,
+);
+assert.ok(clueFunctions, "Chinese clue analysis functions should be present");
+const clueContext = {};
+vm.runInNewContext(
+  `${clueFunctions[0]}
+  result = [
+    analyzeChineseClue("S.F.\\n(1) 力, 力气, 体力\\n(2) 力量", "forza"),
+    analyzeChineseClue("粗壮 ★★ 结实 ★★ 力量 ★★ 气力\\n----------------", "forza"),
+    analyzeChineseClue("andare\\nv.intr. ⑴去；走；行驶 ⑵通向", "andare"),
+    analyzeChineseClue("famiglia / casa / focolare\\n三个名词都有家的意思，但用法不同。", "casa"),
+    analyzeChineseClue("andare\\nINFINITO\\nPresente: andare\\nPassato: essere andato", "andare")
+  ];`,
+  clueContext,
+);
+assert.equal(clueContext.result[0].confidence, "high");
+assert.match(clueContext.result[0].clue, /力气/);
+assert.equal(clueContext.result[1].clue, "粗壮；结实；力量");
+assert.equal(clueContext.result[2].confidence, "high");
+assert.equal(clueContext.result[3].confidence, "low");
+assert.equal(clueContext.result[4].confidence, "none");
+
 const require = createRequire(import.meta.url);
 const FSRS = require("../dist/vendor/ts-fsrs-5.4.2.umd.js");
 const scheduler = FSRS.fsrs({
@@ -54,6 +77,7 @@ assert.match(html, /id="review-more"/);
 assert.match(html, /id="dictionary-manager"/);
 assert.match(html, /id="dict-file"[^>]*multiple/);
 assert.match(html, /id="reference-dictionaries"/);
+assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function startMixedExtraSession\(\)/);
 assert.match(appSource, /var PROGRESS_VERSION = 3/);
@@ -61,5 +85,8 @@ assert.match(appSource, /function rememberDictionarySet\(\)/);
 assert.match(appSource, /function restoreDictionarySet\(\)/);
 assert.match(appSource, /function loadReferenceLookup\(dictionary\)/);
 assert.match(appSource, /function showReferenceDictionaries\(\)/);
+assert.match(appSource, /function ensureDictionaryHash\(dictionary\)/);
+assert.match(appSource, /function analyzeChineseClue\(definition, word\)/);
+assert.match(appSource, /function scanLearningCompatibility\(dictionary\)/);
 
 console.log("Parola smoke tests passed.");

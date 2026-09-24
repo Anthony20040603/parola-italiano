@@ -40,6 +40,7 @@ require(["mdict-parser"], function (MParser) {
     referenceDictionaries: [],
     referenceRenderToken: 0,
     compatibilityByFingerprint: Object.create(null),
+    compatibilityScanToken: 0,
     sourceWords: [],
     words: [],
     progress: null,
@@ -156,7 +157,8 @@ require(["mdict-parser"], function (MParser) {
       lookup: null,
       lookupPromise: null,
       definitionCache: Object.create(null),
-      hash: source.hash || ""
+      hash: source.hash || "",
+      compatibility: source.compatibility || null
     };
   }
 
@@ -213,7 +215,9 @@ require(["mdict-parser"], function (MParser) {
       radio.value = dictionary.id;
       radio.checked = dictionary.id === state.learningDictionaryId;
       name.textContent = dictionaryDisplayName(dictionary);
-      meta.textContent = formatFileSize(dictionary.size);
+      meta.textContent = formatFileSize(dictionary.size) + (dictionary.compatibility
+        ? " · 拼写提示约 " + dictionary.compatibility.usablePercent + "% 可用"
+        : "");
       text.appendChild(name);
       text.appendChild(meta);
       main.appendChild(radio);
@@ -245,22 +249,56 @@ require(["mdict-parser"], function (MParser) {
     updateDictionaryManagerRoles();
   }
 
-  function addDictionaryFiles(files) {
-    var added = 0;
-    var skipped = 0;
-    Array.prototype.slice.call(files || []).forEach(function (file) {
-      if (!/\.mdx$/i.test(file.name)) { skipped += 1; return; }
-      var id = fileFingerprint(file);
-      if (dictionaryById(id)) { skipped += 1; return; }
-      state.dictionaries.push(dictionaryDescriptor(file));
-      if (!state.learningDictionaryId) state.learningDictionaryId = id;
-      added += 1;
+  function bytesToHex(bytes) {
+    return Array.prototype.map.call(new Uint8Array(bytes), function (value) { return value.toString(16).padStart(2, "0"); }).join("");
+  }
+
+  function ensureDictionaryHash(dictionary) {
+    if (dictionary.hash) return Promise.resolve(dictionary.hash);
+    if (!window.crypto || !window.crypto.subtle || !dictionary.file.arrayBuffer) return Promise.resolve("");
+    return dictionary.file.arrayBuffer().then(function (buffer) {
+      return window.crypto.subtle.digest("SHA-256", buffer);
+    }).then(function (digest) {
+      dictionary.hash = bytesToHex(digest);
+      return dictionary.hash;
+    }).catch(function (error) {
+      console.warn("Dictionary hash could not be calculated", error);
+      return "";
     });
-    renderDictionaryManager();
-    if (added || skipped) {
-      setImportStatus("已加入 " + added + " 部词库" + (skipped ? "，跳过 " + skipped + " 个重复或无效文件。" : "。请选择学习词库后开始。"), false);
+  }
+
+  function addDictionaryFiles(files) {
+    var candidates = Array.prototype.slice.call(files || []).filter(function (file) { return /\.mdx$/i.test(file.name); });
+    var invalid = Math.max(0, Number(files && files.length) - candidates.length);
+    if (!candidates.length) {
+      setImportStatus("没有找到可用的 MDX 文件。", true);
+      return Promise.resolve(0);
     }
-    return added;
+    setImportStatus("正在检查 " + candidates.length + " 个文件并识别重复词库……", false);
+    return Promise.all(state.dictionaries.map(ensureDictionaryHash)).then(function () {
+      var added = 0;
+      var duplicate = 0;
+      var chain = Promise.resolve();
+      candidates.forEach(function (file) {
+        chain = chain.then(function () {
+          var id = fileFingerprint(file);
+          if (dictionaryById(id)) { duplicate += 1; return; }
+          var dictionary = dictionaryDescriptor(file);
+          return ensureDictionaryHash(dictionary).then(function (hash) {
+            var sameContent = hash && state.dictionaries.some(function (existing) { return existing.hash === hash; });
+            if (sameContent) { duplicate += 1; return; }
+            state.dictionaries.push(dictionary);
+            if (!state.learningDictionaryId) state.learningDictionaryId = id;
+            added += 1;
+          });
+        });
+      });
+      return chain.then(function () {
+        renderDictionaryManager();
+        setImportStatus("已加入 " + added + " 部词库" + (duplicate ? "，识别并跳过 " + duplicate + " 部重复词库" : "") + (invalid ? "，另有 " + invalid + " 个无效文件" : "") + "。", false);
+        return added;
+      });
+    });
   }
 
   function progressKey() {
@@ -653,7 +691,8 @@ require(["mdict-parser"], function (MParser) {
             return {
               id: dictionary.id,
               referenceEnabled: dictionary.referenceEnabled !== false,
-              hash: dictionary.hash || ""
+              hash: dictionary.hash || "",
+              compatibility: dictionary.compatibility || null
             };
           }),
           updatedAt: new Date().toISOString()
@@ -682,7 +721,8 @@ require(["mdict-parser"], function (MParser) {
             var file = fileFromRecord(record);
             return file ? dictionaryDescriptor(file, {
               referenceEnabled: item.referenceEnabled !== false,
-              hash: item.hash || (record && record.hash) || ""
+              hash: item.hash || (record && record.hash) || "",
+              compatibility: item.compatibility || null
             }) : null;
           });
         })).then(function (dictionaries) {
@@ -982,6 +1022,15 @@ require(["mdict-parser"], function (MParser) {
     showView("studyView");
     setProgressStatus("");
     showNextWord();
+    scanLearningCompatibility(dictionaryById(state.learningDictionaryId)).catch(function (error) {
+      console.warn("Dictionary compatibility scan failed", error);
+      elements.dictionaryCompatibility.textContent = "暂时无法完成拼写提示兼容率抽样；学习功能不受影响。";
+      elements.dictionaryCompatibility.classList.add("status-error");
+      elements.dictionaryCompatibility.hidden = false;
+    });
+    Promise.all(state.dictionaries.map(ensureDictionaryHash)).then(function () {
+      return rememberDictionarySet();
+    }).catch(function () {});
   }
 
   function cardIsDue(record, now) { return validDate(record.fsrs.due).getTime() <= now.getTime(); }
@@ -1200,16 +1249,145 @@ require(["mdict-parser"], function (MParser) {
 
   function escapeRegExp(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
+  function detectWordClass(definition) {
+    var prefix = String(definition || "").slice(0, 500);
+    if (/\b(?:V\.\s*(?:TR|INTR|RIFL)|v\.\s*(?:tr|intr)|\[v\.\])/i.test(prefix)) return "动词";
+    if (/\b(?:S\.[MF]|s\.[mf]|\[n\.\])/i.test(prefix)) return "名词";
+    if (/\b(?:AGG|agg\.|\[adj\.\])/i.test(prefix)) return "形容词";
+    if (/\b(?:AVV|avv\.|\[adv\.\])/i.test(prefix)) return "副词";
+    return "";
+  }
+
+  function cleanChineseClue(line, word) {
+    var value = String(line || "").replace(new RegExp(escapeRegExp(word), "gi"), " ");
+    var firstChinese = value.search(/[\u3400-\u9fff]/);
+    if (firstChinese >= 0) value = value.slice(firstChinese);
+    value = value.replace(/[◣◆▎★]+/g, " ").replace(/\s+/g, " ").trim();
+    value = value.replace(/^(?:意汉|汉意|同义词|词典)\s*/i, "").trim();
+    if (value.length > 72) {
+      value = value.slice(0, 72).replace(/[，,;；][^，,;；]*$/, "").trim() + "…";
+    }
+    return value;
+  }
+
+  function analyzeChineseClue(definition, word) {
+    var empty = { clue: "", confidence: "none", reason: "没有中文释义", wordClass: "" };
+    if (!definition || definition === "暂时没有找到这个词的释义。" || definition === "这个词条没有可显示的释义。") return empty;
+    var text = String(definition).replace(/\u0000/g, "");
+    var lines = text.split(/\n+/).map(function (line) { return line.replace(/\s+/g, " ").trim(); }).filter(Boolean);
+    var wordClass = detectWordClass(text);
+    var firstLines = lines.slice(0, 4).join(" ");
+    if (/^[A-Za-zÀ-ÖØ-öø-ÿŒœÆæ'’ -]+(?:\s*\/\s*[A-Za-zÀ-ÖØ-öø-ÿŒœÆæ'’ -]+){1,}/u.test(firstLines)) {
+      return { clue: "", confidence: "low", reason: "词条同时辨析多个意大利语近义词", wordClass: wordClass };
+    }
+
+    var summary = lines.find(function (line) { return /★★/.test(line) && /[\u3400-\u9fff]/.test(line); });
+    if (summary) {
+      var summaryParts = summary.split(/★★+/).map(function (part) { return cleanChineseClue(part, word); })
+        .filter(function (part) { return /[\u3400-\u9fff]/.test(part) && !/词典/.test(part); }).slice(0, 3);
+      if (summaryParts.length) return { clue: summaryParts.join("；"), confidence: "high", reason: "词条开头有简明中文摘要", wordClass: wordClass };
+    }
+
+    var numbered = lines.find(function (line) {
+      return /^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*)?(?:[（(]?\d+[）).、]|[①②③④⑤⑥⑦⑧⑨⑩⑴⑵⑶⑷⑸⑹⑺⑻⑼⑽])/.test(line)
+        && /[\u3400-\u9fff]/.test(line);
+    });
+    if (numbered) {
+      var numberedClue = cleanChineseClue(numbered, word);
+      if (numberedClue) return { clue: numberedClue, confidence: "high", reason: "提取第一个正式中文义项", wordClass: wordClass };
+    }
+
+    var tagged = lines.find(function (line) {
+      return /(?:\[(?:n|v|adj|adv)\.\]|\b(?:s\.[mf]|v\.(?:tr|intr)|agg\.|avv\.)\b)/i.test(line)
+        && /[\u3400-\u9fff]/.test(line);
+    });
+    if (tagged) {
+      var taggedClue = cleanChineseClue(tagged, word);
+      if (taggedClue) return { clue: taggedClue, confidence: "high", reason: "词性行包含简明中文释义", wordClass: wordClass };
+    }
+
+    var fallback = lines.find(function (line) {
+      if (!/[\u3400-\u9fff]/.test(line) || /(?:词典|例句|TEMPI|Clicca|点击)/i.test(line)) return false;
+      var latinCount = (line.match(/[A-Za-zÀ-ÖØ-öø-ÿ]/g) || []).length;
+      return line.length <= 120 && latinCount <= 24 && !/^▎/.test(line);
+    });
+    if (fallback) {
+      var fallbackClue = cleanChineseClue(fallback, word);
+      if (fallbackClue) return { clue: fallbackClue, confidence: "medium", reason: "使用首个较短中文释义", wordClass: wordClass };
+    }
+    var hasChinese = /[\u3400-\u9fff]/.test(text);
+    return { clue: "", confidence: hasChinese ? "low" : "none", reason: hasChinese ? "只有长篇说明或例句，无法生成可靠提示" : "没有中文释义", wordClass: wordClass };
+  }
+
   function extractChineseClue(definition, word) {
-    if (!definition || definition === "暂时没有找到这个词的释义。") return "";
-    var withoutWord = definition.replace(new RegExp(escapeRegExp(word), "gi"), " ");
-    var lines = withoutWord.split(/\n+/).map(function (line) {
-      return line.replace(/\s+/g, " ").trim();
-    }).filter(function (line) { return /[\u3400-\u9fff]/.test(line); });
-    if (!lines.length) return "";
-    var clue = lines[0].replace(/^[\s,，;；:：.。·•\-—\d①②③④⑤⑥⑦⑧⑨⑩]+/, "").trim();
-    if (clue.length > 180) clue = clue.slice(0, 178).replace(/[，,;；][^，,;；]*$/, "") + "…";
-    return clue;
+    var analysis = analyzeChineseClue(definition, word);
+    return analysis.confidence === "high" || analysis.confidence === "medium" ? analysis.clue : "";
+  }
+
+  function compatibilitySample(words, maximum) {
+    if (words.length <= maximum) return words.slice();
+    var sample = [];
+    var step = words.length / maximum;
+    for (var index = 0; index < maximum; index += 1) sample.push(words[Math.floor(index * step)]);
+    return sample;
+  }
+
+  function showCompatibilityResult(dictionary) {
+    var result = dictionary && dictionary.compatibility;
+    if (!result) return;
+    elements.dictionaryCompatibility.hidden = false;
+    elements.dictionaryCompatibility.classList.toggle("status-error", result.usablePercent < 40);
+    elements.dictionaryCompatibility.textContent = "拼写提示抽样：约 " + result.usablePercent + "% 可用（抽查 " + result.sampleSize
+      + " 个词条）" + (result.usablePercent < 40 ? "。这部词典更适合作为参考词库，无法生成提示的单词会自动改用意大利语→中文。" : "。低可靠词条会自动改用意大利语→中文。");
+  }
+
+  function scanLearningCompatibility(dictionary) {
+    if (!dictionary || !state.lookup || !state.sourceWords.length) return Promise.resolve(null);
+    if (dictionary.compatibility) {
+      state.compatibilityByFingerprint[dictionary.id] = dictionary.compatibility;
+      showCompatibilityResult(dictionary);
+      return Promise.resolve(dictionary.compatibility);
+    }
+    var token = ++state.compatibilityScanToken;
+    var fingerprint = dictionary.id;
+    var lookup = state.lookup;
+    var words = compatibilitySample(state.sourceWords, 120);
+    var counts = { high: 0, medium: 0, low: 0, none: 0 };
+    var position = 0;
+    elements.dictionaryCompatibility.hidden = false;
+    elements.dictionaryCompatibility.classList.remove("status-error");
+    elements.dictionaryCompatibility.textContent = "正在抽样检查这部词库能否生成可靠的中文拼写提示……";
+
+    function nextBatch() {
+      if (token !== state.compatibilityScanToken || fingerprint !== state.fingerprint) return Promise.resolve(null);
+      var batch = words.slice(position, position + 8);
+      position += batch.length;
+      if (!batch.length) {
+        var usable = counts.high + counts.medium;
+        var result = {
+          sampleSize: words.length,
+          usablePercent: words.length ? Math.round(usable * 100 / words.length) : 0,
+          high: counts.high,
+          medium: counts.medium,
+          low: counts.low,
+          none: counts.none,
+          scannedAt: new Date().toISOString()
+        };
+        dictionary.compatibility = result;
+        state.compatibilityByFingerprint[dictionary.id] = result;
+        showCompatibilityResult(dictionary);
+        renderDictionaryManager();
+        rememberDictionarySet().catch(function () {});
+        return result;
+      }
+      return Promise.all(batch.map(function (word) {
+        return lookup(word).then(function (definitions) {
+          var analysis = analyzeChineseClue(definitionToText(definitions), word);
+          counts[hasOwn(counts, analysis.confidence) ? analysis.confidence : "none"] += 1;
+        }).catch(function () { counts.none += 1; });
+      })).then(nextBatch);
+    }
+    return nextBatch();
   }
 
   function spellingPattern(word) {
@@ -1239,7 +1417,8 @@ require(["mdict-parser"], function (MParser) {
     elements.speakButton.hidden = true;
     state.currentDefinitionPromise.then(function (definition) {
       if (token !== state.cardToken) return;
-      var clue = extractChineseClue(definition, selection.word);
+      var clueAnalysis = analyzeChineseClue(definition, selection.word);
+      var clue = clueAnalysis.confidence === "high" || clueAnalysis.confidence === "medium" ? clueAnalysis.clue : "";
       state.currentDefinition = definition;
       if (!clue) {
         state.currentMode = "meaning";
@@ -1247,9 +1426,10 @@ require(["mdict-parser"], function (MParser) {
         saveProgress();
         resetCardUI();
         renderMeaningCard(selection, token);
-        elements.wordHint.textContent = "这个词条没有可靠的中文提示，已改为意大利语→中文";
+        elements.wordHint.textContent = clueAnalysis.reason + "，已改为意大利语→中文";
         return;
       }
+      elements.wordPosition.textContent = "复习 · 看中文拼意大利语" + (clueAnalysis.wordClass ? " · " + clueAnalysis.wordClass : "");
       elements.currentWord.textContent = clue;
       elements.wordHint.textContent = spellingPattern(selection.word);
       elements.spellingInput.placeholder = "输入 " + Array.from(selection.word).filter(function (c) {
@@ -1771,7 +1951,10 @@ require(["mdict-parser"], function (MParser) {
   function handleFileEvent(event) {
     var files = event.target.files;
     if (files && files.length) {
-      addDictionaryFiles(files);
+      addDictionaryFiles(files).catch(function (error) {
+        console.error(error);
+        setImportStatus("检查词库时发生错误，请重新选择文件。", true);
+      });
       showView("importView");
     }
     event.target.value = "";
