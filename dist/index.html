@@ -72,6 +72,13 @@
             <span id="progress-label">0 / 0</span>
           </div>
           <p id="daily-summary" class="daily-summary">今日新词 0 / 20 · 复习 0 / 80</p>
+          <button id="open-library-progress" class="library-progress-entry" type="button">
+            <span>
+              <strong>查看词库进度</strong>
+              <small>评分、题型记录与下次复习时间</small>
+            </span>
+            <span class="entry-arrow" aria-hidden="true">›</span>
+          </button>
 
           <article class="word-card" aria-live="polite">
             <div class="card-topline">
@@ -174,6 +181,58 @@
           </div>
           <p id="progress-status" class="inline-status study-status" role="status" hidden></p>
         </section>
+
+        <dialog id="library-progress-dialog" class="library-progress-dialog" aria-labelledby="library-progress-title">
+          <div class="library-progress-sheet">
+            <header class="library-progress-header">
+              <div>
+                <span class="eyebrow">学习记录</span>
+                <h2 id="library-progress-title">词库进度</h2>
+              </div>
+              <button id="close-library-progress" class="dialog-close" type="button" aria-label="关闭词库进度">×</button>
+            </header>
+
+            <div id="library-progress-overview" class="library-progress-overview" aria-label="词库进度概览"></div>
+
+            <div class="library-progress-controls">
+              <label class="library-search">
+                <span class="sr-only">搜索单词</span>
+                <input id="library-progress-search" type="search" placeholder="搜索意大利语单词" autocomplete="off" />
+              </label>
+              <label>
+                <span class="sr-only">筛选学习状态</span>
+                <select id="library-progress-filter" aria-label="筛选学习状态">
+                  <option value="all">全部状态</option>
+                  <option value="unseen">未学习</option>
+                  <option value="learning">学习中</option>
+                  <option value="due">现在到期</option>
+                  <option value="reviewing">复习中</option>
+                  <option value="mastered">稳定掌握</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">词库排序</span>
+                <select id="library-progress-sort" aria-label="词库排序">
+                  <option value="order">固定学习顺序</option>
+                  <option value="due">下次复习时间</option>
+                  <option value="weak">熟练度低到高</option>
+                  <option value="word">单词字母顺序</option>
+                </select>
+              </label>
+            </div>
+
+            <p id="library-progress-result" class="library-progress-result"></p>
+            <div class="library-progress-table-header" aria-hidden="true">
+              <span>单词</span>
+              <span>状态</span>
+              <span>最近评分</span>
+              <span>下次复习</span>
+            </div>
+            <div id="library-progress-list" class="library-progress-list"></div>
+            <p id="library-progress-empty" class="library-progress-empty" hidden>没有找到符合条件的单词。</p>
+            <button id="library-progress-more" class="utility-button library-progress-more" type="button" hidden>加载更多</button>
+          </div>
+        </dialog>
 
         <section id="error-view" class="panel error-panel" hidden aria-live="assertive">
           <div class="eyebrow">没有成功读取</div>

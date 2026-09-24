@@ -47,5 +47,8 @@ const requireScript = html.indexOf('src="vendor/require.js"');
 assert.ok(fsrsScript >= 0 && fsrsScript < requireScript, "FSRS must load before the app bootstrap");
 assert.match(html, /data-rating="1"/);
 assert.match(html, /id="spelling-form"/);
+assert.match(html, /id="open-library-progress"/);
+assert.match(html, /id="library-progress-dialog"/);
+assert.match(appSource, /function renderLibraryProgress\(\)/);
 
 console.log("Parola smoke tests passed.");

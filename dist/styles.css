@@ -38,7 +38,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -48,6 +49,8 @@ label {
 }
 
 button:focus-visible,
+input:focus-visible,
+select:focus-visible,
 label:focus-within,
 a:focus-visible {
   outline: 3px solid rgba(198, 66, 54, 0.35);
@@ -56,6 +59,17 @@ a:focus-visible {
 
 [hidden] {
   display: none !important;
+}
+
+.sr-only {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .app-shell {
@@ -388,6 +402,49 @@ h1 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.library-progress-entry {
+  width: 100%;
+  min-height: 62px;
+  margin: -3px 0 18px;
+  border: 1px solid rgba(16, 36, 63, 0.12);
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 15px;
+  color: var(--navy);
+  background: rgba(255, 253, 247, 0.7);
+  cursor: pointer;
+  text-align: left;
+}
+
+.library-progress-entry:hover {
+  border-color: rgba(16, 36, 63, 0.28);
+  background: var(--surface);
+}
+
+.library-progress-entry strong,
+.library-progress-entry small {
+  display: block;
+}
+
+.library-progress-entry strong {
+  font-size: 14px;
+}
+
+.library-progress-entry small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.entry-arrow {
+  color: var(--red);
+  font-size: 27px;
+  line-height: 1;
 }
 
 .progress-track {
@@ -732,6 +789,202 @@ h1 {
   line-height: 1.5;
 }
 
+.library-progress-dialog {
+  width: min(900px, calc(100% - 28px));
+  max-height: min(88dvh, 850px);
+  margin: auto;
+  border: 0;
+  border-radius: 25px;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 30px 90px rgba(16, 36, 63, 0.3);
+}
+
+.library-progress-dialog::backdrop {
+  background: rgba(9, 20, 34, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.library-progress-sheet {
+  max-height: min(88dvh, 850px);
+  overflow-y: auto;
+  padding: 25px;
+}
+
+.library-progress-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.library-progress-header .eyebrow {
+  margin-bottom: 6px;
+}
+
+.library-progress-header h2 {
+  margin: 0;
+  color: var(--navy);
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 30px;
+}
+
+.dialog-close {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--navy);
+  background: #fff;
+  cursor: pointer;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.library-progress-overview {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 9px;
+}
+
+.library-overview-item {
+  border-radius: 13px;
+  padding: 12px;
+  background: rgba(16, 36, 63, 0.055);
+}
+
+.library-overview-item strong,
+.library-overview-item span {
+  display: block;
+}
+
+.library-overview-item strong {
+  color: var(--navy);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+}
+
+.library-overview-item span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.library-progress-controls {
+  margin-top: 17px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 145px 170px;
+  gap: 9px;
+}
+
+.library-progress-controls input,
+.library-progress-controls select {
+  width: 100%;
+  height: 43px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 13px;
+}
+
+.library-progress-result {
+  margin: 14px 2px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-progress-table-header,
+.library-progress-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.6fr) 0.8fr 0.95fr 1.2fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.library-progress-table-header {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.library-progress-row {
+  min-height: 71px;
+  border-bottom: 1px solid rgba(16, 36, 63, 0.08);
+  padding: 10px 12px;
+}
+
+.library-progress-word strong,
+.library-progress-word small,
+.library-progress-due strong,
+.library-progress-due small {
+  display: block;
+}
+
+.library-progress-word strong {
+  color: var(--navy);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.library-progress-word small,
+.library-progress-due small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.library-progress-due strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.library-status-badge {
+  width: fit-content;
+  border-radius: 99px;
+  padding: 5px 8px;
+  color: var(--navy-soft);
+  background: rgba(16, 36, 63, 0.08);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.library-status-badge.status-due,
+.library-status-badge.status-learning {
+  color: #9f3028;
+  background: var(--red-soft);
+}
+
+.library-status-badge.status-mastered {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.library-progress-rating {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.library-progress-empty {
+  margin: 34px 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.library-progress-more {
+  width: 100%;
+  margin-top: 14px;
+}
+
 .error-panel p {
   color: var(--muted);
   font-size: 16px;
@@ -773,6 +1026,83 @@ footer {
 
   .settings-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .library-progress-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: 92dvh;
+    margin: auto 0 0;
+    border-radius: 24px 24px 0 0;
+  }
+
+  .library-progress-sheet {
+    max-height: 92dvh;
+    padding: 21px 16px max(20px, env(safe-area-inset-bottom));
+  }
+
+  .library-progress-overview {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .library-progress-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .library-search {
+    grid-column: 1 / -1;
+  }
+
+  .library-progress-table-header {
+    display: none;
+  }
+
+  .library-progress-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px 12px;
+    padding: 13px 4px;
+  }
+
+  .library-progress-word {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .library-status-badge {
+    grid-column: 2;
+    justify-self: end;
+  }
+
+  .library-progress-rating,
+  .library-progress-due {
+    grid-column: 1 / -1;
+    padding-left: 0;
+  }
+
+  .library-progress-rating::before {
+    content: "最近评分：";
+    color: var(--muted);
+  }
+
+  .library-progress-due {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .library-progress-due::before {
+    content: "下次复习：";
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .library-progress-due strong,
+  .library-progress-due small {
+    display: inline;
+  }
+
+  .library-progress-due small {
+    margin-top: 0;
   }
 
   footer {

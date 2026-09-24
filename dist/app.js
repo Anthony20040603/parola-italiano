@@ -20,6 +20,7 @@ require(["mdict-parser"], function (MParser) {
   var FSRS_LIBRARY_VERSION = "5.4.2";
   var COMPANION_DELAY_MS = 10 * 60 * 1000;
   var MAX_REVIEW_LOGS = 50000;
+  var LIBRARY_PAGE_SIZE = 120;
   var DEFAULT_SETTINGS = {
     dailyNew: 20,
     dailyReview: 80,
@@ -47,7 +48,8 @@ require(["mdict-parser"], function (MParser) {
     definitionCache: Object.create(null),
     saveChain: Promise.resolve(),
     completed: false,
-    completionTimer: null
+    completionTimer: null,
+    libraryVisibleLimit: LIBRARY_PAGE_SIZE
   };
 
   var elements = {
@@ -72,6 +74,17 @@ require(["mdict-parser"], function (MParser) {
     progressBar: document.getElementById("progress-bar"),
     progressLabel: document.getElementById("progress-label"),
     dailySummary: document.getElementById("daily-summary"),
+    openLibraryProgress: document.getElementById("open-library-progress"),
+    libraryProgressDialog: document.getElementById("library-progress-dialog"),
+    closeLibraryProgress: document.getElementById("close-library-progress"),
+    libraryProgressOverview: document.getElementById("library-progress-overview"),
+    libraryProgressSearch: document.getElementById("library-progress-search"),
+    libraryProgressFilter: document.getElementById("library-progress-filter"),
+    libraryProgressSort: document.getElementById("library-progress-sort"),
+    libraryProgressResult: document.getElementById("library-progress-result"),
+    libraryProgressList: document.getElementById("library-progress-list"),
+    libraryProgressEmpty: document.getElementById("library-progress-empty"),
+    libraryProgressMore: document.getElementById("library-progress-more"),
     wordPosition: document.getElementById("word-position"),
     currentWord: document.getElementById("current-word"),
     wordHint: document.getElementById("word-hint"),
@@ -922,6 +935,198 @@ require(["mdict-parser"], function (MParser) {
     elements.dailySummary.textContent = "今日新词 " + state.progress.daily.newWords.length + " / " + state.progress.settings.dailyNew + " · 复习 " + state.progress.daily.reviewCount + " / " + state.progress.settings.dailyReview + " · 当前到期 " + countDue(new Date());
   }
 
+  function libraryStatus(word, record, now) {
+    if (!record) return { key: "unseen", label: "未学习", rank: 0 };
+    if (state.progress.pending && state.progress.pending.word === word) {
+      return { key: "learning", label: "当前学习", rank: 2 };
+    }
+    var cardState = Number(record.fsrs.state);
+    if (cardIsDue(record, now) && cardState !== window.FSRS.State.New) {
+      return { key: "due", label: "现在到期", rank: 1 };
+    }
+    if (cardState === window.FSRS.State.Learning) {
+      return { key: "learning", label: "学习中", rank: 2 };
+    }
+    if (cardState === window.FSRS.State.Relearning) {
+      return { key: "learning", label: "重新学习", rank: 1 };
+    }
+    if (cardState === window.FSRS.State.New || Number(record.fsrs.reps) === 0) {
+      return { key: "learning", label: "新词", rank: 2 };
+    }
+    if (cardState === window.FSRS.State.Review && Number(record.fsrs.stability) >= 30) {
+      return { key: "mastered", label: "稳定掌握", rank: 4 };
+    }
+    return { key: "reviewing", label: "复习中", rank: 3 };
+  }
+
+  function libraryEntries(now) {
+    return state.words.map(function (word, index) {
+      var record = getRecord(word);
+      return {
+        word: word,
+        index: index,
+        record: record,
+        status: libraryStatus(word, record, now),
+        due: record ? validDate(record.fsrs.due) : null
+      };
+    });
+  }
+
+  function renderLibraryOverview(entries) {
+    var started = entries.filter(function (entry) { return Boolean(entry.record); }).length;
+    var due = entries.filter(function (entry) { return entry.status.key === "due"; }).length;
+    var mastered = entries.filter(function (entry) { return entry.status.key === "mastered"; }).length;
+    var values = [
+      { value: entries.length, label: "词库总数" },
+      { value: started, label: "已经开始" },
+      { value: due, label: "现在到期" },
+      { value: mastered, label: "稳定掌握" }
+    ];
+    elements.libraryProgressOverview.textContent = "";
+    var fragment = document.createDocumentFragment();
+    values.forEach(function (item) {
+      var box = document.createElement("div");
+      var number = document.createElement("strong");
+      var label = document.createElement("span");
+      box.className = "library-overview-item";
+      number.textContent = item.value;
+      label.textContent = item.label;
+      box.appendChild(number);
+      box.appendChild(label);
+      fragment.appendChild(box);
+    });
+    elements.libraryProgressOverview.appendChild(fragment);
+  }
+
+  function libraryDueText(entry, now) {
+    if (!entry.record) return { primary: "尚未安排", secondary: "" };
+    if (state.progress.pending && state.progress.pending.word === entry.word) {
+      return { primary: "当前卡片", secondary: "完成评分后安排" };
+    }
+    var absoluteOptions = {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    };
+    if (entry.due.getFullYear() !== now.getFullYear()) absoluteOptions.year = "numeric";
+    return {
+      primary: entry.due.getTime() <= now.getTime() ? "现在到期" : formatDue(entry.due, now),
+      secondary: entry.due.toLocaleString("zh-CN", absoluteOptions)
+    };
+  }
+
+  function libraryPracticeText(record) {
+    if (!record) return "尚无练习记录";
+    var stats = record.stats || freshWordStats();
+    var parts = ["释义 " + stats.meaningAttempts + " 次", "拼写 " + stats.spellingAttempts + " 次"];
+    var failures = stats.meaningFailures + stats.spellingFailures;
+    if (failures) parts.push("答错 " + failures + " 次");
+    if (stats.accentWarnings) parts.push("重音提示 " + stats.accentWarnings + " 次");
+    return parts.join(" · ");
+  }
+
+  function appendLibraryRow(fragment, entry, now) {
+    var row = document.createElement("div");
+    var wordCell = document.createElement("div");
+    var word = document.createElement("strong");
+    var practice = document.createElement("small");
+    var status = document.createElement("span");
+    var rating = document.createElement("span");
+    var dueCell = document.createElement("div");
+    var duePrimary = document.createElement("strong");
+    var dueSecondary = document.createElement("small");
+    var dueText = libraryDueText(entry, now);
+
+    row.className = "library-progress-row";
+    wordCell.className = "library-progress-word";
+    word.textContent = entry.word;
+    word.lang = "it";
+    practice.textContent = libraryPracticeText(entry.record);
+    wordCell.appendChild(word);
+    wordCell.appendChild(practice);
+
+    status.className = "library-status-badge status-" + entry.status.key;
+    status.textContent = entry.status.label;
+    rating.className = "library-progress-rating";
+    rating.textContent = entry.record && entry.record.lastRating ? ratingName(entry.record.lastRating) : "—";
+
+    dueCell.className = "library-progress-due";
+    duePrimary.textContent = dueText.primary;
+    dueSecondary.textContent = dueText.secondary;
+    dueCell.appendChild(duePrimary);
+    if (dueText.secondary) dueCell.appendChild(dueSecondary);
+
+    row.appendChild(wordCell);
+    row.appendChild(status);
+    row.appendChild(rating);
+    row.appendChild(dueCell);
+    fragment.appendChild(row);
+  }
+
+  function renderLibraryProgress() {
+    if (!state.progress) return;
+    var now = new Date();
+    var entries = libraryEntries(now);
+    renderLibraryOverview(entries);
+    var query = elements.libraryProgressSearch.value.trim().toLocaleLowerCase("it-IT");
+    var filter = elements.libraryProgressFilter.value;
+    var sort = elements.libraryProgressSort.value;
+    var filtered = entries.filter(function (entry) {
+      if (query && entry.word.toLocaleLowerCase("it-IT").indexOf(query) < 0) return false;
+      return filter === "all" || entry.status.key === filter;
+    });
+
+    if (sort === "due") {
+      filtered.sort(function (a, b) {
+        var dueA = a.due ? a.due.getTime() : Number.POSITIVE_INFINITY;
+        var dueB = b.due ? b.due.getTime() : Number.POSITIVE_INFINITY;
+        return dueA - dueB || a.index - b.index;
+      });
+    } else if (sort === "weak") {
+      filtered.sort(function (a, b) {
+        var ratingA = a.record ? Number(a.record.lastRating) || 0 : 0;
+        var ratingB = b.record ? Number(b.record.lastRating) || 0 : 0;
+        var stabilityA = a.record ? Number(a.record.fsrs.stability) || 0 : 0;
+        var stabilityB = b.record ? Number(b.record.fsrs.stability) || 0 : 0;
+        return a.status.rank - b.status.rank || ratingA - ratingB || stabilityA - stabilityB || a.index - b.index;
+      });
+    } else if (sort === "word") {
+      filtered.sort(function (a, b) { return a.word.localeCompare(b.word, "it-IT"); });
+    }
+
+    var visible = filtered.slice(0, state.libraryVisibleLimit);
+    elements.libraryProgressList.textContent = "";
+    var fragment = document.createDocumentFragment();
+    visible.forEach(function (entry) { appendLibraryRow(fragment, entry, now); });
+    elements.libraryProgressList.appendChild(fragment);
+    elements.libraryProgressResult.textContent = "共 " + filtered.length + " 个单词" + (filtered.length > visible.length ? "，当前显示 " + visible.length + " 个" : "");
+    elements.libraryProgressEmpty.hidden = filtered.length > 0;
+    elements.libraryProgressMore.hidden = visible.length >= filtered.length;
+  }
+
+  function openLibraryProgress() {
+    state.libraryVisibleLimit = LIBRARY_PAGE_SIZE;
+    renderLibraryProgress();
+    if (typeof elements.libraryProgressDialog.showModal === "function") {
+      if (!elements.libraryProgressDialog.open) elements.libraryProgressDialog.showModal();
+    } else {
+      elements.libraryProgressDialog.setAttribute("open", "");
+    }
+    setTimeout(function () { elements.libraryProgressSearch.focus(); }, 0);
+  }
+
+  function closeLibraryProgress() {
+    if (typeof elements.libraryProgressDialog.close === "function") elements.libraryProgressDialog.close();
+    else elements.libraryProgressDialog.removeAttribute("open");
+  }
+
+  function resetLibraryList() {
+    state.libraryVisibleLimit = LIBRARY_PAGE_SIZE;
+    renderLibraryProgress();
+  }
+
   function revealDefinition() {
     elements.revealActions.hidden = true;
     elements.gradeActions.hidden = false;
@@ -1113,6 +1318,18 @@ require(["mdict-parser"], function (MParser) {
   elements.studyProgressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.exportProgress.addEventListener("click", exportProgressFile);
   elements.importProgress.addEventListener("click", function () { elements.studyProgressFileInput.click(); });
+  elements.openLibraryProgress.addEventListener("click", openLibraryProgress);
+  elements.closeLibraryProgress.addEventListener("click", closeLibraryProgress);
+  elements.libraryProgressDialog.addEventListener("click", function (event) {
+    if (event.target === elements.libraryProgressDialog) closeLibraryProgress();
+  });
+  elements.libraryProgressSearch.addEventListener("input", resetLibraryList);
+  elements.libraryProgressFilter.addEventListener("change", resetLibraryList);
+  elements.libraryProgressSort.addEventListener("change", resetLibraryList);
+  elements.libraryProgressMore.addEventListener("click", function () {
+    state.libraryVisibleLimit += LIBRARY_PAGE_SIZE;
+    renderLibraryProgress();
+  });
   elements.changeDict.addEventListener("click", function () {
     if (state.completionTimer) {
       clearTimeout(state.completionTimer);
