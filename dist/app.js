@@ -9,12 +9,23 @@ require(["mdict-parser"], function (MParser) {
 
   var MAX_WORDS = 7000;
   var DB_NAME = "parola-local-dictionary";
-  var DB_VERSION = 1;
-  var STORE_NAME = "files";
+  var DB_VERSION = 2;
+  var FILE_STORE = "files";
+  var PROGRESS_STORE = "progress";
   var ACTIVE_FILE_KEY = "active";
   var PROGRESS_FORMAT = "parola-progress";
-  var PROGRESS_VERSION = 1;
+  var PROGRESS_VERSION = 2;
   var SHUFFLE_ALGORITHM = "mulberry32-fisher-yates-v1";
+  var FSRS_ALGORITHM = "FSRS-6";
+  var FSRS_LIBRARY_VERSION = "5.4.2";
+  var COMPANION_DELAY_MS = 10 * 60 * 1000;
+  var MAX_REVIEW_LOGS = 50000;
+  var DEFAULT_SETTINGS = {
+    dailyNew: 20,
+    dailyReview: 80,
+    requestRetention: 0.9,
+    maximumInterval: 3650
+  };
 
   var state = {
     file: null,
@@ -26,7 +37,17 @@ require(["mdict-parser"], function (MParser) {
     progress: null,
     pendingProgressImport: null,
     currentWord: "",
-    dictionaryCapped: false
+    currentMode: "meaning",
+    currentDefinition: "",
+    currentDefinitionPromise: null,
+    currentAnswerResult: "",
+    currentStartedAt: 0,
+    cardToken: 0,
+    dictionaryCapped: false,
+    definitionCache: Object.create(null),
+    saveChain: Promise.resolve(),
+    completed: false,
+    completionTimer: null
   };
 
   var elements = {
@@ -47,8 +68,10 @@ require(["mdict-parser"], function (MParser) {
     errorMessage: document.getElementById("error-message"),
     dictName: document.getElementById("dict-name"),
     knownCount: document.getElementById("known-count"),
+    countLabel: document.getElementById("count-label"),
     progressBar: document.getElementById("progress-bar"),
     progressLabel: document.getElementById("progress-label"),
+    dailySummary: document.getElementById("daily-summary"),
     wordPosition: document.getElementById("word-position"),
     currentWord: document.getElementById("current-word"),
     wordHint: document.getElementById("word-hint"),
@@ -58,10 +81,22 @@ require(["mdict-parser"], function (MParser) {
     revealActions: document.getElementById("reveal-actions"),
     gradeActions: document.getElementById("grade-actions"),
     revealButton: document.getElementById("reveal-button"),
-    againButton: document.getElementById("again-button"),
-    knownButton: document.getElementById("known-button"),
-    dictionaryNote: document.getElementById("dictionary-note")
+    spellingForm: document.getElementById("spelling-form"),
+    spellingInput: document.getElementById("spelling-input"),
+    spellingCheck: document.getElementById("spelling-check"),
+    spellingGiveUp: document.getElementById("spelling-give-up"),
+    spellingFeedback: document.getElementById("spelling-feedback"),
+    spellingFeedbackText: document.getElementById("spelling-feedback-text"),
+    spellingAnswer: document.getElementById("spelling-answer"),
+    completeActions: document.getElementById("complete-actions"),
+    refreshQueue: document.getElementById("refresh-queue"),
+    dictionaryNote: document.getElementById("dictionary-note"),
+    settingNew: document.getElementById("setting-new"),
+    settingReview: document.getElementById("setting-review"),
+    settingRetention: document.getElementById("setting-retention")
   };
+
+  var gradeButtons = Array.prototype.slice.call(document.querySelectorAll("[data-rating]"));
 
   function showView(viewName) {
     ["importView", "loadingView", "studyView", "errorView"].forEach(function (name) {
@@ -72,19 +107,6 @@ require(["mdict-parser"], function (MParser) {
 
   function progressKey() {
     return "parola-progress:" + state.fingerprint;
-  }
-
-  function freshProgress() {
-    return {
-      shuffleSeed: createShuffleSeed(),
-      shuffleAlgorithm: SHUFFLE_ALGORITHM,
-      cursor: 0,
-      reviewed: 0,
-      known: {},
-      learning: {},
-      retry: [],
-      pendingWord: ""
-    };
   }
 
   function createShuffleSeed() {
@@ -123,34 +145,362 @@ require(["mdict-parser"], function (MParser) {
     return result;
   }
 
+  function localDateKey(date) {
+    var value = date || new Date();
+    var shifted = new Date(value.getTime() - value.getTimezoneOffset() * 60000);
+    return shifted.toISOString().slice(0, 10);
+  }
+
+  function freshDaily(date) {
+    return { date: localDateKey(date), newWords: [], reviewCount: 0 };
+  }
+
+  function freshProgress() {
+    return {
+      schemaVersion: PROGRESS_VERSION,
+      shuffleSeed: createShuffleSeed(),
+      shuffleAlgorithm: SHUFFLE_ALGORITHM,
+      cursor: 0,
+      reviewed: 0,
+      cards: {},
+      reviewLog: [],
+      pending: null,
+      daily: freshDaily(),
+      settings: Object.assign({}, DEFAULT_SETTINGS),
+      scheduler: {
+        algorithm: FSRS_ALGORITHM,
+        library: "ts-fsrs",
+        libraryVersion: FSRS_LIBRARY_VERSION
+      }
+    };
+  }
+
   function applyStudyOrder() {
     state.progress.shuffleSeed = normalizeSeed(state.progress.shuffleSeed);
     state.progress.shuffleAlgorithm = SHUFFLE_ALGORITHM;
     state.words = shuffledWords(state.sourceWords, state.progress.shuffleSeed);
   }
 
-  function loadProgress() {
-    try {
-      var raw = localStorage.getItem(progressKey());
-      if (!raw && state.legacyFingerprint) {
-        raw = localStorage.getItem("parola-progress:" + state.legacyFingerprint);
-      }
-      var saved = raw ? JSON.parse(raw) : freshProgress();
-      var progress = Object.assign(freshProgress(), saved);
-      progress.shuffleSeed = normalizeSeed(progress.shuffleSeed);
-      progress.shuffleAlgorithm = SHUFFLE_ALGORITHM;
-      return progress;
-    } catch (error) {
-      return freshProgress();
+  function clampInteger(value, minimum, maximum, fallback) {
+    var number = Math.floor(Number(value));
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(maximum, Math.max(minimum, number));
+  }
+
+  function sanitizeSettings(value) {
+    var source = value || {};
+    return {
+      dailyNew: clampInteger(source.dailyNew, 0, 200, DEFAULT_SETTINGS.dailyNew),
+      dailyReview: clampInteger(source.dailyReview, 0, 1000, DEFAULT_SETTINGS.dailyReview),
+      requestRetention: Math.min(0.97, Math.max(0.8, Number(source.requestRetention) || 0.9)),
+      maximumInterval: clampInteger(source.maximumInterval, 30, 36500, 3650)
+    };
+  }
+
+  function createScheduler(settings) {
+    if (!window.FSRS) throw new Error("FSRS 调度组件没有成功加载。");
+    var options = sanitizeSettings(settings);
+    return window.FSRS.fsrs({
+      request_retention: options.requestRetention,
+      maximum_interval: options.maximumInterval,
+      enable_fuzz: true,
+      enable_short_term: true,
+      learning_steps: ["10m"],
+      relearning_steps: ["10m"]
+    });
+  }
+
+  function validDate(value, fallback) {
+    var date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? new Date(fallback || Date.now()) : date;
+  }
+
+  function serializeCard(card) {
+    return {
+      due: validDate(card.due).toISOString(),
+      stability: Number(card.stability) || 0,
+      difficulty: Number(card.difficulty) || 0,
+      elapsed_days: Number(card.elapsed_days) || 0,
+      scheduled_days: Number(card.scheduled_days) || 0,
+      reps: Math.max(0, Math.floor(Number(card.reps) || 0)),
+      lapses: Math.max(0, Math.floor(Number(card.lapses) || 0)),
+      learning_steps: Math.max(0, Math.floor(Number(card.learning_steps) || 0)),
+      state: clampInteger(card.state, 0, 3, window.FSRS.State.New),
+      last_review: card.last_review ? validDate(card.last_review).toISOString() : null
+    };
+  }
+
+  function hydrateCard(card, fallbackDate) {
+    if (!card || typeof card !== "object") {
+      return window.FSRS.createEmptyCard(fallbackDate || new Date());
     }
+    return {
+      due: validDate(card.due, fallbackDate),
+      stability: Math.max(0, Number(card.stability) || 0),
+      difficulty: Math.max(0, Number(card.difficulty) || 0),
+      elapsed_days: Number(card.elapsed_days) || 0,
+      scheduled_days: Number(card.scheduled_days) || 0,
+      reps: Math.max(0, Math.floor(Number(card.reps) || 0)),
+      lapses: Math.max(0, Math.floor(Number(card.lapses) || 0)),
+      learning_steps: Math.max(0, Math.floor(Number(card.learning_steps) || 0)),
+      state: clampInteger(card.state, 0, 3, window.FSRS.State.New),
+      last_review: card.last_review ? validDate(card.last_review) : undefined
+    };
+  }
+
+  function freshModeState() {
+    return {
+      lastMode: "",
+      nextMode: "meaning",
+      forceMode: "",
+      meaningPassed: false,
+      spellingPassed: false
+    };
+  }
+
+  function freshWordStats() {
+    return {
+      meaningAttempts: 0,
+      meaningFailures: 0,
+      spellingAttempts: 0,
+      spellingFailures: 0,
+      accentWarnings: 0
+    };
+  }
+
+  function freshRecord(now) {
+    return {
+      fsrs: serializeCard(window.FSRS.createEmptyCard(now || new Date())),
+      mode: freshModeState(),
+      stats: freshWordStats(),
+      lastRating: 0,
+      lastResult: "new"
+    };
+  }
+
+  function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object || {}, key);
+  }
+
+  function getRecord(word) {
+    return hasOwn(state.progress.cards, word) ? state.progress.cards[word] : null;
+  }
+
+  function sanitizeRecord(value, now) {
+    var record = freshRecord(now);
+    var source = value && typeof value === "object" ? value : {};
+    var mode = source.mode || {};
+    var stats = source.stats || {};
+    record.fsrs = serializeCard(hydrateCard(source.fsrs, now));
+    record.mode = {
+      lastMode: mode.lastMode === "spelling" ? "spelling" : mode.lastMode === "meaning" ? "meaning" : "",
+      nextMode: mode.nextMode === "spelling" ? "spelling" : "meaning",
+      forceMode: mode.forceMode === "spelling" ? "spelling" : mode.forceMode === "meaning" ? "meaning" : "",
+      meaningPassed: Boolean(mode.meaningPassed),
+      spellingPassed: Boolean(mode.spellingPassed)
+    };
+    record.stats = {
+      meaningAttempts: clampInteger(stats.meaningAttempts, 0, 1000000, 0),
+      meaningFailures: clampInteger(stats.meaningFailures, 0, 1000000, 0),
+      spellingAttempts: clampInteger(stats.spellingAttempts, 0, 1000000, 0),
+      spellingFailures: clampInteger(stats.spellingFailures, 0, 1000000, 0),
+      accentWarnings: clampInteger(stats.accentWarnings, 0, 1000000, 0)
+    };
+    record.lastRating = clampInteger(source.lastRating, 0, 4, 0);
+    record.lastResult = typeof source.lastResult === "string" ? source.lastResult.slice(0, 32) : "";
+    return record;
+  }
+
+  function chooseMode(record) {
+    var mode = record.mode || freshModeState();
+    if (mode.forceMode) return mode.forceMode;
+    if (!mode.meaningPassed) return "meaning";
+    if (!mode.spellingPassed) return "spelling";
+    return mode.lastMode === "meaning" ? "spelling" : "meaning";
+  }
+
+  function migrateLegacyProgress(saved) {
+    var now = new Date();
+    var progress = freshProgress();
+    var availableWords = new Set(state.sourceWords);
+    progress.shuffleSeed = normalizeSeed(saved && saved.shuffleSeed);
+    progress.cursor = Math.max(0, Math.floor(Number(saved && saved.cursor) || 0));
+    progress.reviewed = Math.max(0, Math.floor(Number(saved && saved.reviewed) || 0));
+    var scheduler = createScheduler(progress.settings);
+
+    Object.keys((saved && saved.known) || {}).forEach(function (word) {
+      if (!availableWords.has(word)) return;
+      var record = freshRecord(now);
+      record.fsrs = serializeCard(scheduler.next(hydrateCard(record.fsrs), now, window.FSRS.Rating.Good).card);
+      record.mode.meaningPassed = true;
+      record.mode.lastMode = "meaning";
+      record.mode.nextMode = "spelling";
+      record.stats.meaningAttempts = 1;
+      record.lastRating = window.FSRS.Rating.Good;
+      record.lastResult = "migrated-known";
+      progress.cards[word] = record;
+    });
+
+    Object.keys((saved && saved.learning) || {}).forEach(function (word) {
+      if (!availableWords.has(word)) return;
+      var record = freshRecord(now);
+      record.fsrs = serializeCard(scheduler.next(hydrateCard(record.fsrs), now, window.FSRS.Rating.Again).card);
+      record.mode.lastMode = "meaning";
+      record.mode.nextMode = "meaning";
+      record.mode.forceMode = "meaning";
+      record.stats.meaningAttempts = 1;
+      record.stats.meaningFailures = 1;
+      record.lastRating = window.FSRS.Rating.Again;
+      record.lastResult = "migrated-learning";
+      progress.cards[word] = record;
+    });
+
+    var pendingWord = saved && saved.pendingWord;
+    if (availableWords.has(pendingWord)) {
+      if (!hasOwn(progress.cards, pendingWord)) progress.cards[pendingWord] = freshRecord(now);
+      progress.pending = { word: pendingWord, mode: chooseMode(progress.cards[pendingWord]) };
+    }
+    progress.migratedFrom = 1;
+    return progress;
+  }
+
+  function normalizeProgress(saved) {
+    if (!saved || typeof saved !== "object" || !saved.cards || Number(saved.schemaVersion) < 2) {
+      return migrateLegacyProgress(saved || {});
+    }
+    var now = new Date();
+    var progress = freshProgress();
+    var availableWords = new Set(state.sourceWords);
+    progress.shuffleSeed = normalizeSeed(saved.shuffleSeed);
+    progress.cursor = Math.max(0, Math.floor(Number(saved.cursor) || 0));
+    progress.reviewed = Math.max(0, Math.floor(Number(saved.reviewed) || 0));
+    progress.settings = sanitizeSettings(saved.settings);
+    Object.keys(saved.cards).forEach(function (word) {
+      if (availableWords.has(word)) progress.cards[word] = sanitizeRecord(saved.cards[word], now);
+    });
+    progress.reviewLog = Array.isArray(saved.reviewLog)
+      ? saved.reviewLog.slice(-MAX_REVIEW_LOGS).filter(function (entry) {
+          return entry && availableWords.has(entry.w) && typeof entry.t === "string";
+        })
+      : [];
+    progress.daily = saved.daily && saved.daily.date === localDateKey(now)
+      ? {
+          date: saved.daily.date,
+          newWords: Array.isArray(saved.daily.newWords)
+            ? saved.daily.newWords.filter(function (word) { return availableWords.has(word); })
+            : [],
+          reviewCount: Math.max(0, Math.floor(Number(saved.daily.reviewCount) || 0))
+        }
+      : freshDaily(now);
+    if (saved.pending && availableWords.has(saved.pending.word)) {
+      if (!hasOwn(progress.cards, saved.pending.word)) progress.cards[saved.pending.word] = freshRecord(now);
+      progress.pending = {
+        word: saved.pending.word,
+        mode: saved.pending.mode === "spelling" ? "spelling" : "meaning"
+      };
+    }
+    progress.scheduler = {
+      algorithm: FSRS_ALGORITHM,
+      library: "ts-fsrs",
+      libraryVersion: FSRS_LIBRARY_VERSION
+    };
+    return progress;
+  }
+
+  function ensureDaily() {
+    var today = localDateKey(new Date());
+    if (!state.progress.daily || state.progress.daily.date !== today) state.progress.daily = freshDaily();
+  }
+
+  function openDatabase() {
+    return new Promise(function (resolve, reject) {
+      if (!("indexedDB" in window)) {
+        reject(new Error("当前浏览器不支持本地词库存储"));
+        return;
+      }
+      var request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = function () {
+        if (!request.result.objectStoreNames.contains(FILE_STORE)) request.result.createObjectStore(FILE_STORE);
+        if (!request.result.objectStoreNames.contains(PROGRESS_STORE)) request.result.createObjectStore(PROGRESS_STORE);
+      };
+      request.onsuccess = function () { resolve(request.result); };
+      request.onerror = function () { reject(request.error); };
+    });
+  }
+
+  function dbRequest(storeName, mode, action) {
+    return openDatabase().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var transaction = db.transaction(storeName, mode);
+        var store = transaction.objectStore(storeName);
+        var request = action(store);
+        request.onsuccess = function () { resolve(request.result); };
+        request.onerror = function () { reject(request.error); };
+        transaction.oncomplete = function () { db.close(); };
+        transaction.onerror = function () { db.close(); };
+      });
+    });
+  }
+
+  function rememberFile(file) {
+    return dbRequest(FILE_STORE, "readwrite", function (store) {
+      return store.put(
+        { blob: file, name: file.name, size: file.size, lastModified: file.lastModified || 0 },
+        ACTIVE_FILE_KEY
+      );
+    });
+  }
+
+  function restoreFile() {
+    return dbRequest(FILE_STORE, "readonly", function (store) { return store.get(ACTIVE_FILE_KEY); })
+      .then(function (record) {
+        if (!record || !record.blob) return null;
+        return new File([record.blob], record.name, {
+          type: "application/octet-stream",
+          lastModified: record.lastModified || Date.now()
+        });
+      });
+  }
+
+  function loadProgress() {
+    return dbRequest(PROGRESS_STORE, "readonly", function (store) { return store.get(state.fingerprint); })
+      .catch(function () { return null; })
+      .then(function (stored) {
+        var saved = stored && stored.progress;
+        if (!saved) {
+          try {
+            var raw = localStorage.getItem(progressKey());
+            if (!raw && state.legacyFingerprint) {
+              raw = localStorage.getItem("parola-progress:" + state.legacyFingerprint);
+            }
+            saved = raw ? JSON.parse(raw) : null;
+          } catch (error) {
+            saved = null;
+          }
+        }
+        return normalizeProgress(saved);
+      });
   }
 
   function saveProgress() {
+    if (!state.progress || !state.fingerprint) return;
+    var snapshot;
+    var serialized;
     try {
-      localStorage.setItem(progressKey(), JSON.stringify(state.progress));
+      serialized = JSON.stringify(state.progress);
+      snapshot = JSON.parse(serialized);
+      if (serialized.length < 1500000) localStorage.setItem(progressKey(), serialized);
     } catch (error) {
-      console.warn("Progress could not be saved", error);
+      console.warn("Progress could not be serialized", error);
+      return;
     }
+    state.saveChain = state.saveChain.catch(function () {}).then(function () {
+      return dbRequest(PROGRESS_STORE, "readwrite", function (store) {
+        return store.put({ progress: snapshot, updatedAt: new Date().toISOString() }, state.fingerprint);
+      });
+    }).catch(function (error) {
+      console.warn("Progress could not be saved to IndexedDB", error);
+    });
   }
 
   function setImportStatus(message, isError) {
@@ -183,36 +533,29 @@ require(["mdict-parser"], function (MParser) {
   function exportProgressFile() {
     if (!state.file || !state.progress) return;
     saveProgress();
-    var json = JSON.stringify(progressFilePayload(), null, 2);
-    var blob = new Blob([json], { type: "application/json;charset=utf-8" });
+    var blob = new Blob([JSON.stringify(progressFilePayload(), null, 2)], { type: "application/json;charset=utf-8" });
     var link = document.createElement("a");
-    var date = new Date().toISOString().slice(0, 10);
+    var date = localDateKey(new Date());
     var dictionaryName = state.file.name.replace(/\.mdx$/i, "").replace(/[\\/:*?\"<>|]+/g, "-");
-    link.href = URL.createObjectURL(blob);
+    var objectUrl = URL.createObjectURL(blob);
+    link.href = objectUrl;
     link.download = "Parola-进度-" + dictionaryName + "-" + date + ".json";
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setTimeout(function () {
-      URL.revokeObjectURL(link.href);
-    }, 1000);
-    setProgressStatus("进度文件已导出，包含固定乱序种子 " + state.progress.shuffleSeed + "。", false);
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+    setProgressStatus("进度文件已导出，包含 FSRS 状态、复习记录和固定乱序种子。", false);
   }
 
   function parseProgressFile(file) {
     return file.text().then(function (text) {
       var payload;
-      try {
-        payload = JSON.parse(text);
-      } catch (error) {
-        throw new Error("这不是有效的 JSON 进度文件。");
-      }
-      if (!payload || payload.format !== PROGRESS_FORMAT || payload.version !== PROGRESS_VERSION) {
+      try { payload = JSON.parse(text); }
+      catch (error) { throw new Error("这不是有效的 JSON 进度文件。"); }
+      if (!payload || payload.format !== PROGRESS_FORMAT || [1, 2].indexOf(Number(payload.version)) < 0) {
         throw new Error("这不是受支持的 Parola 进度文件。");
       }
-      if (!payload.dictionary || !payload.progress) {
-        throw new Error("进度文件缺少词库或学习记录。");
-      }
+      if (!payload.dictionary || !payload.progress) throw new Error("进度文件缺少词库或学习记录。");
       return payload;
     });
   }
@@ -223,137 +566,31 @@ require(["mdict-parser"], function (MParser) {
     return dictionary.name === state.file.name && Number(dictionary.size) === state.file.size;
   }
 
-  function sanitizeWordMap(value, availableWords) {
-    var result = {};
-    if (!value || typeof value !== "object" || Array.isArray(value)) return result;
-    Object.keys(value).forEach(function (word) {
-      if (availableWords.has(word)) result[word] = true;
-    });
-    return result;
-  }
-
-  function sanitizeProgress(value) {
-    var availableWords = new Set(state.sourceWords);
-    var progress = freshProgress();
-    progress.shuffleSeed = normalizeSeed(value.shuffleSeed);
-    progress.shuffleAlgorithm = SHUFFLE_ALGORITHM;
-    progress.cursor = Math.max(0, Math.floor(Number(value.cursor) || 0));
-    progress.reviewed = Math.max(0, Math.floor(Number(value.reviewed) || 0));
-    progress.known = sanitizeWordMap(value.known, availableWords);
-    progress.learning = sanitizeWordMap(value.learning, availableWords);
-    progress.retry = Array.isArray(value.retry)
-      ? value.retry
-          .filter(function (item) {
-            return item && availableWords.has(item.word) && Number.isFinite(Number(item.due));
-          })
-          .slice(-200)
-          .map(function (item) {
-            return { word: item.word, due: Math.max(0, Math.floor(Number(item.due))) };
-          })
-      : [];
-    progress.pendingWord = availableWords.has(value.pendingWord) ? value.pendingWord : "";
-    return progress;
-  }
-
   function applyImportedProgress(payload) {
     if (!dictionaryMatches(payload)) {
-      throw new Error(
-        "进度文件属于“" + (payload.dictionary.name || "另一个词库") + "”，请导入对应的 MDX 文件。"
-      );
+      throw new Error("进度文件属于“" + (payload.dictionary.name || "另一个词库") + "”，请导入对应的 MDX 文件。");
     }
-    state.progress = sanitizeProgress(payload.progress);
+    state.progress = normalizeProgress(payload.progress);
+    ensureDaily();
     applyStudyOrder();
+    syncSettingsUI();
     saveProgress();
   }
 
   function handleProgressFile(file, queueUntilDictionary) {
     if (!file) return;
-    parseProgressFile(file)
-      .then(function (payload) {
-        if (queueUntilDictionary || !state.file || !state.progress) {
-          state.pendingProgressImport = payload;
-          setImportStatus(
-            "已读取进度文件。现在请选择“" + payload.dictionary.name + "”词库，随后会自动恢复。",
-            false
-          );
-          return;
-        }
-        applyImportedProgress(payload);
-        showNextWord();
-        setProgressStatus(
-          "进度已恢复；后续顺序使用文件中的固定种子 " + state.progress.shuffleSeed + "。",
-          false
-        );
-      })
-      .catch(function (error) {
-        if (state.file && state.progress) setProgressStatus(error.message, true);
-        else setImportStatus(error.message, true);
-      });
-  }
-
-  function openDatabase() {
-    return new Promise(function (resolve, reject) {
-      if (!("indexedDB" in window)) {
-        reject(new Error("当前浏览器不支持本地词库存储"));
+    parseProgressFile(file).then(function (payload) {
+      if (queueUntilDictionary || !state.file || !state.progress) {
+        state.pendingProgressImport = payload;
+        setImportStatus("已读取进度文件。现在请选择“" + payload.dictionary.name + "”词库，随后会自动恢复。", false);
         return;
       }
-      var request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onupgradeneeded = function () {
-        if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-          request.result.createObjectStore(STORE_NAME);
-        }
-      };
-      request.onsuccess = function () {
-        resolve(request.result);
-      };
-      request.onerror = function () {
-        reject(request.error);
-      };
-    });
-  }
-
-  function dbRequest(mode, action) {
-    return openDatabase().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var transaction = db.transaction(STORE_NAME, mode);
-        var store = transaction.objectStore(STORE_NAME);
-        var request = action(store);
-        request.onsuccess = function () {
-          resolve(request.result);
-        };
-        request.onerror = function () {
-          reject(request.error);
-        };
-        transaction.oncomplete = function () {
-          db.close();
-        };
-      });
-    });
-  }
-
-  function rememberFile(file) {
-    return dbRequest("readwrite", function (store) {
-      return store.put(
-        {
-          blob: file,
-          name: file.name,
-          size: file.size,
-          lastModified: file.lastModified || 0
-        },
-        ACTIVE_FILE_KEY
-      );
-    });
-  }
-
-  function restoreFile() {
-    return dbRequest("readonly", function (store) {
-      return store.get(ACTIVE_FILE_KEY);
-    }).then(function (record) {
-      if (!record || !record.blob) return null;
-      return new File([record.blob], record.name, {
-        type: "application/octet-stream",
-        lastModified: record.lastModified || Date.now()
-      });
+      applyImportedProgress(payload);
+      showNextWord();
+      setProgressStatus("进度已恢复，FSRS 复习日期和两种题型记录已载入。", false);
+    }).catch(function (error) {
+      if (state.file && state.progress) setProgressStatus(error.message, true);
+      else setImportStatus(error.message, true);
     });
   }
 
@@ -383,202 +620,479 @@ require(["mdict-parser"], function (MParser) {
 
   function parseDictionary(file) {
     elements.loadingMessage.textContent = "正在读取词典结构……";
-    return MParser([file])
-      .then(function (resources) {
-        if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
-        return resources.mdx;
-      })
-      .then(function (lookup) {
-        state.lookup = lookup;
-        elements.loadingMessage.textContent = "正在准备学习词条……";
-        return lookup({ phrase: "", max: MAX_WORDS });
-      })
-      .then(function (entries) {
-        state.dictionaryCapped = entries.length >= MAX_WORDS;
-        state.sourceWords = uniqueStudyWords(entries);
-        if (!state.sourceWords.length) {
-          throw new Error("没有识别到适合学习的意大利语词条");
-        }
-      });
+    return MParser([file]).then(function (resources) {
+      if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
+      return resources.mdx;
+    }).then(function (lookup) {
+      state.lookup = lookup;
+      elements.loadingMessage.textContent = "正在准备学习词条……";
+      return lookup({ phrase: "", max: MAX_WORDS });
+    }).then(function (entries) {
+      state.dictionaryCapped = entries.length >= MAX_WORDS;
+      state.sourceWords = uniqueStudyWords(entries);
+      if (!state.sourceWords.length) throw new Error("没有识别到适合学习的意大利语词条");
+    });
   }
 
-  function fileFingerprint(file) {
-    return [file.name, file.size].join(":");
-  }
-
-  function legacyFileFingerprint(file) {
-    return [file.name, file.size, file.lastModified || 0].join(":");
-  }
+  function fileFingerprint(file) { return [file.name, file.size].join(":"); }
+  function legacyFileFingerprint(file) { return [file.name, file.size, file.lastModified || 0].join(":"); }
 
   function importDictionary(file, shouldRemember) {
     if (!file) return;
-    if (!/\.mdx$/i.test(file.name)) {
-      showError("请选择扩展名为 .mdx 的词典文件。");
-      return;
+    if (!/\.mdx$/i.test(file.name)) { showError("请选择扩展名为 .mdx 的词典文件。"); return; }
+    if (!window.FSRS) { showError("FSRS 调度组件没有加载成功，请刷新页面后重试。"); return; }
+    if (state.completionTimer) {
+      clearTimeout(state.completionTimer);
+      state.completionTimer = null;
     }
-
     state.file = file;
     state.fingerprint = fileFingerprint(file);
     state.legacyFingerprint = legacyFileFingerprint(file);
+    state.definitionCache = Object.create(null);
     showView("loadingView");
 
-    parseDictionary(file)
-      .then(function () {
-        var restoreMessage = "";
-        var restoreFailed = false;
-        state.progress = loadProgress();
-        if (state.pendingProgressImport) {
-          try {
-            applyImportedProgress(state.pendingProgressImport);
-            restoreMessage =
-              "进度已恢复；后续顺序使用文件中的固定种子 " + state.progress.shuffleSeed + "。";
-            state.pendingProgressImport = null;
-          } catch (error) {
-            applyStudyOrder();
-            restoreMessage = error.message;
-            restoreFailed = true;
-          }
-        } else {
-          applyStudyOrder();
+    parseDictionary(file).then(function () { return loadProgress(); }).then(function (progress) {
+      var restoreMessage = "";
+      var restoreFailed = false;
+      state.progress = progress;
+      if (state.pendingProgressImport) {
+        try {
+          applyImportedProgress(state.pendingProgressImport);
+          restoreMessage = "进度已恢复，FSRS 状态和题型记录已载入。";
+          state.pendingProgressImport = null;
+        } catch (error) {
+          restoreMessage = error.message;
+          restoreFailed = true;
         }
-        if (shouldRemember) {
-          rememberFile(file).catch(function (error) {
-            console.warn("Dictionary could not be remembered", error);
-          });
-        }
-        startStudy();
-        if (restoreMessage) setProgressStatus(restoreMessage, restoreFailed);
-      })
-      .catch(function (error) {
-        console.error(error);
-        showError(
-          "无法解析这个词库。它可能使用了加密、特殊压缩格式，或不是标准的 MDict 2.0 文件。"
-        );
-      });
+      }
+      ensureDaily();
+      applyStudyOrder();
+      if (shouldRemember) rememberFile(file).catch(function (error) { console.warn("Dictionary could not be remembered", error); });
+      startStudy();
+      saveProgress();
+      if (restoreMessage) setProgressStatus(restoreMessage, restoreFailed);
+    }).catch(function (error) {
+      console.error(error);
+      showError(error && /FSRS/.test(error.message) ? error.message : "无法解析这个词库。它可能使用了加密、特殊压缩格式，或不是标准的 MDict 2.0 文件。");
+    });
   }
 
-  function showError(message) {
-    elements.errorMessage.textContent = message;
-    showView("errorView");
+  function showError(message) { elements.errorMessage.textContent = message; showView("errorView"); }
+
+  function syncSettingsUI() {
+    if (!state.progress) return;
+    elements.settingNew.value = state.progress.settings.dailyNew;
+    elements.settingReview.value = state.progress.settings.dailyReview;
+    elements.settingRetention.value = Math.round(state.progress.settings.requestRetention * 100);
   }
 
   function startStudy() {
-    var cleanName = state.file.name.replace(/\.mdx$/i, "");
-    elements.dictName.textContent = cleanName;
+    elements.dictName.textContent = state.file.name.replace(/\.mdx$/i, "");
+    elements.countLabel.textContent = "稳定掌握";
     elements.dictionaryNote.textContent = state.dictionaryCapped
-      ? "简单版每个词库先读取前 7000 个词条。"
-      : "共读取 " + state.words.length + " 个可学习词条，学习顺序已固定乱序。";
+      ? "每个词库先读取前 7000 个词条；FSRS 会按到期时间安排复习。"
+      : "共读取 " + state.words.length + " 个词条；新词顺序固定，复习由 FSRS 安排。";
+    syncSettingsUI();
     showView("studyView");
     setProgressStatus("");
     showNextWord();
   }
 
-  function takeDueRetry() {
-    var retry = state.progress.retry || [];
-    var index = retry.findIndex(function (item) {
-      return item.due <= state.progress.reviewed;
+  function cardIsDue(record, now) { return validDate(record.fsrs.due).getTime() <= now.getTime(); }
+
+  function dueRecords(now) {
+    return Object.keys(state.progress.cards).map(function (word) {
+      return { word: word, record: state.progress.cards[word] };
+    }).filter(function (item) { return cardIsDue(item.record, now); }).sort(function (a, b) {
+      var stateA = Number(a.record.fsrs.state);
+      var stateB = Number(b.record.fsrs.state);
+      var urgentA = stateA === window.FSRS.State.Learning || stateA === window.FSRS.State.Relearning ? 0 : 1;
+      var urgentB = stateB === window.FSRS.State.Learning || stateB === window.FSRS.State.Relearning ? 0 : 1;
+      if (urgentA !== urgentB) return urgentA - urgentB;
+      return validDate(a.record.fsrs.due).getTime() - validDate(b.record.fsrs.due).getTime();
     });
-    if (index < 0) return "";
-    return retry.splice(index, 1)[0].word;
   }
 
-  function showNextWord() {
-    var pendingWord = state.progress.pendingWord;
-    var retryWord = pendingWord ? "" : takeDueRetry();
-    var index = state.progress.cursor % state.words.length;
-    state.currentWord = pendingWord || retryWord || state.words[index];
-    if (!pendingWord && !retryWord) state.progress.cursor = (index + 1) % state.words.length;
-    state.progress.pendingWord = state.currentWord;
+  function nextUnseenWord(now) {
+    while (state.progress.cursor < state.words.length) {
+      var word = state.words[state.progress.cursor];
+      state.progress.cursor += 1;
+      if (!hasOwn(state.progress.cards, word)) {
+        state.progress.cards[word] = freshRecord(now);
+        if (state.progress.daily.newWords.indexOf(word) < 0) state.progress.daily.newWords.push(word);
+        return { word: word, record: state.progress.cards[word] };
+      }
+    }
+    return null;
+  }
 
-    elements.currentWord.textContent = state.currentWord;
-    elements.wordHint.textContent = "先想一想它的意思";
-    elements.definition.textContent = "正在查找释义……";
+  function selectNextCard(now) {
+    ensureDaily();
+    var pending = state.progress.pending;
+    if (pending && hasOwn(state.progress.cards, pending.word)) {
+      return { word: pending.word, record: state.progress.cards[pending.word], mode: pending.mode === "spelling" ? "spelling" : "meaning" };
+    }
+    var due = dueRecords(now);
+    if (due.length) {
+      var urgent = due.find(function (item) {
+        var cardState = Number(item.record.fsrs.state);
+        return cardState === window.FSRS.State.Learning || cardState === window.FSRS.State.Relearning;
+      });
+      if (urgent || state.progress.daily.reviewCount < state.progress.settings.dailyReview) {
+        var selectedDue = urgent || due[0];
+        return { word: selectedDue.word, record: selectedDue.record, mode: chooseMode(selectedDue.record) };
+      }
+    }
+    if (state.progress.daily.newWords.length < state.progress.settings.dailyNew) {
+      var unseen = nextUnseenWord(now);
+      if (unseen) return { word: unseen.word, record: unseen.record, mode: "meaning" };
+    }
+    return null;
+  }
+
+  function resetCardUI() {
+    state.currentDefinition = "";
+    state.currentAnswerResult = "";
+    elements.currentWord.classList.remove("spelling-prompt", "completion-title");
     elements.definitionWrap.hidden = true;
-    elements.revealActions.hidden = false;
+    elements.revealActions.hidden = true;
     elements.gradeActions.hidden = true;
-    updateStats();
-    saveProgress();
-  }
-
-  function updateStats() {
-    var known = Object.keys(state.progress.known || {}).length;
-    var touched = new Set(
-      Object.keys(state.progress.known || {}).concat(Object.keys(state.progress.learning || {}))
-    ).size;
-    var total = state.words.length;
-    var percent = total ? Math.min(100, (touched / total) * 100) : 0;
-    elements.knownCount.textContent = known;
-    elements.progressLabel.textContent = touched + " / " + total;
-    elements.progressBar.style.width = percent.toFixed(2) + "%";
-    elements.wordPosition.textContent = "已学习 " + touched + " 个";
+    elements.spellingForm.hidden = true;
+    elements.spellingFeedback.hidden = true;
+    elements.completeActions.hidden = true;
+    elements.speakButton.hidden = false;
+    elements.spellingInput.disabled = false;
+    elements.spellingInput.value = "";
+    elements.spellingFeedback.className = "spelling-feedback";
+    elements.spellingFeedbackText.textContent = "";
+    elements.spellingAnswer.textContent = "";
+    gradeButtons.forEach(function (button) { button.classList.remove("recommended"); });
   }
 
   function definitionToText(definitions) {
     var html = (definitions || []).join("<hr>");
     if (!html) return "这个词条没有可显示的释义。";
     var doc = new DOMParser().parseFromString(html, "text/html");
-    doc.querySelectorAll("script, style, noscript, iframe, object, embed").forEach(function (node) {
-      node.remove();
+    doc.querySelectorAll("script, style, noscript, iframe, object, embed").forEach(function (node) { node.remove(); });
+    doc.querySelectorAll("br, p, div, li, hr").forEach(function (node) { node.appendChild(doc.createTextNode("\n")); });
+    return (doc.body.textContent || "").replace(/\u0000/g, "").replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function getDefinition(word) {
+    if (hasOwn(state.definitionCache, word)) return Promise.resolve(state.definitionCache[word]);
+    return state.lookup(word).then(function (definitions) {
+      var text = definitionToText(definitions);
+      state.definitionCache[word] = text;
+      return text;
+    }).catch(function (error) {
+      console.error(error);
+      return "暂时没有找到这个词的释义。";
     });
-    doc.querySelectorAll("br, p, div, li, hr").forEach(function (node) {
-      node.appendChild(doc.createTextNode("\n"));
+  }
+
+  function escapeRegExp(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  function extractChineseClue(definition, word) {
+    if (!definition || definition === "暂时没有找到这个词的释义。") return "";
+    var withoutWord = definition.replace(new RegExp(escapeRegExp(word), "gi"), " ");
+    var lines = withoutWord.split(/\n+/).map(function (line) {
+      return line.replace(/\s+/g, " ").trim();
+    }).filter(function (line) { return /[\u3400-\u9fff]/.test(line); });
+    if (!lines.length) return "";
+    var clue = lines[0].replace(/^[\s,，;；:：.。·•\-—\d①②③④⑤⑥⑦⑧⑨⑩]+/, "").trim();
+    if (clue.length > 180) clue = clue.slice(0, 178).replace(/[，,;；][^，,;；]*$/, "") + "…";
+    return clue;
+  }
+
+  function spellingPattern(word) {
+    return Array.from(word).map(function (character) {
+      if (/\s/.test(character)) return "\u00a0\u00a0 ";
+      if (/[\-'’]/.test(character)) return character;
+      return "_";
+    }).join(" ");
+  }
+
+  function renderMeaningCard(selection, token) {
+    elements.wordPosition.textContent = (selection.record.fsrs.reps ? "复习" : "新词") + " · 看意大利语想中文";
+    elements.currentWord.textContent = selection.word;
+    elements.wordHint.textContent = "先想一想它的中文意思";
+    elements.revealActions.hidden = false;
+    elements.speakButton.hidden = false;
+    state.currentDefinitionPromise.then(function (definition) {
+      if (token === state.cardToken) state.currentDefinition = definition;
     });
-    return (doc.body.textContent || "")
-      .replace(/\u0000/g, "")
-      .replace(/[ \t]+/g, " ")
-      .replace(/ *\n */g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+  }
+
+  function renderSpellingCard(selection, token) {
+    elements.wordPosition.textContent = "复习 · 看中文拼意大利语";
+    elements.currentWord.textContent = "正在准备中文提示……";
+    elements.currentWord.classList.add("spelling-prompt");
+    elements.wordHint.textContent = spellingPattern(selection.word);
+    elements.speakButton.hidden = true;
+    state.currentDefinitionPromise.then(function (definition) {
+      if (token !== state.cardToken) return;
+      var clue = extractChineseClue(definition, selection.word);
+      state.currentDefinition = definition;
+      if (!clue) {
+        state.currentMode = "meaning";
+        state.progress.pending.mode = "meaning";
+        saveProgress();
+        resetCardUI();
+        renderMeaningCard(selection, token);
+        elements.wordHint.textContent = "这个词条没有可靠的中文提示，已改为意大利语→中文";
+        return;
+      }
+      elements.currentWord.textContent = clue;
+      elements.wordHint.textContent = spellingPattern(selection.word);
+      elements.spellingInput.placeholder = "输入 " + Array.from(selection.word).filter(function (c) {
+        return /[A-Za-zÀ-ÖØ-öø-ÿŒœÆæ]/.test(c);
+      }).length + " 个字母";
+      elements.spellingForm.hidden = false;
+    });
+  }
+
+  function showNextWord() {
+    if (!state.progress) return;
+    if (state.completionTimer) {
+      clearTimeout(state.completionTimer);
+      state.completionTimer = null;
+    }
+    resetCardUI();
+    ensureDaily();
+    var now = new Date();
+    var selection = selectNextCard(now);
+    updateStats();
+    if (!selection) { renderCompletion(now); saveProgress(); return; }
+    state.completed = false;
+    state.currentWord = selection.word;
+    state.currentMode = selection.mode;
+    state.currentStartedAt = Date.now();
+    state.progress.pending = { word: selection.word, mode: selection.mode };
+    state.cardToken += 1;
+    var token = state.cardToken;
+    state.currentDefinitionPromise = getDefinition(selection.word);
+    if (selection.mode === "spelling") renderSpellingCard(selection, token);
+    else renderMeaningCard(selection, token);
+    updateStats();
+    saveProgress();
+  }
+
+  function renderCompletion(now) {
+    state.completed = true;
+    state.currentWord = "";
+    state.progress.pending = null;
+    elements.wordPosition.textContent = "FSRS 今日安排";
+    elements.currentWord.textContent = "今日任务完成";
+    elements.currentWord.classList.add("completion-title");
+    elements.speakButton.hidden = true;
+    elements.completeActions.hidden = false;
+    var due = dueRecords(now);
+    var future = Object.keys(state.progress.cards).map(function (word) {
+      return validDate(state.progress.cards[word].fsrs.due);
+    }).filter(function (date) { return date.getTime() > now.getTime(); }).sort(function (a, b) { return a - b; });
+    if (due.length) elements.wordHint.textContent = "已达到今日复习目标，仍有 " + due.length + " 个到期词；可在学习设置中提高复习数。";
+    else if (future.length) elements.wordHint.textContent = "下一项复习将在 " + formatDue(future[0], now) + "。";
+    else if (state.progress.cursor >= state.words.length) elements.wordHint.textContent = "当前词库已经全部进入学习计划。";
+    else elements.wordHint.textContent = "新词和复习目标都完成了，明天继续。";
+    if (!due.length && future.length) {
+      var delay = Math.max(250, future[0].getTime() - now.getTime() + 250);
+      state.completionTimer = setTimeout(showNextWord, Math.min(delay, 6 * 60 * 60 * 1000));
+    }
+  }
+
+  function countDue(now) {
+    var pendingWord = state.progress.pending && state.progress.pending.word;
+    return dueRecords(now || new Date()).filter(function (item) {
+      return item.word !== pendingWord;
+    }).length;
+  }
+
+  function updateStats() {
+    if (!state.progress) return;
+    var records = Object.keys(state.progress.cards).map(function (word) { return state.progress.cards[word]; });
+    var stable = records.filter(function (record) {
+      return Number(record.fsrs.state) === window.FSRS.State.Review && Number(record.fsrs.stability) >= 30;
+    }).length;
+    var touched = records.length;
+    var total = state.words.length;
+    var percent = total ? Math.min(100, (touched / total) * 100) : 0;
+    elements.knownCount.textContent = stable;
+    elements.progressLabel.textContent = touched + " / " + total;
+    elements.progressBar.style.width = percent.toFixed(2) + "%";
+    elements.dailySummary.textContent = "今日新词 " + state.progress.daily.newWords.length + " / " + state.progress.settings.dailyNew + " · 复习 " + state.progress.daily.reviewCount + " / " + state.progress.settings.dailyReview + " · 当前到期 " + countDue(new Date());
   }
 
   function revealDefinition() {
     elements.revealActions.hidden = true;
     elements.gradeActions.hidden = false;
     elements.definitionWrap.hidden = false;
-    elements.wordHint.textContent = "";
-    state.lookup(state.currentWord)
-      .then(function (definitions) {
-        elements.definition.textContent = definitionToText(definitions);
-      })
-      .catch(function (error) {
-        console.error(error);
-        elements.definition.textContent = "暂时没有找到这个词的释义。";
-      });
+    elements.definition.textContent = "正在查找释义……";
+    elements.wordHint.textContent = "请按实际回忆情况评分";
+    var token = state.cardToken;
+    state.currentDefinitionPromise.then(function (definition) {
+      if (token !== state.cardToken) return;
+      state.currentDefinition = definition;
+      elements.definition.textContent = definition;
+    });
   }
 
-  function markWord(isKnown) {
-    var word = state.currentWord;
-    state.progress.reviewed += 1;
-    state.progress.pendingWord = "";
-    if (isKnown) {
-      state.progress.known[word] = true;
-      delete state.progress.learning[word];
-    } else {
-      state.progress.learning[word] = true;
-      delete state.progress.known[word];
-      state.progress.retry.push({ word: word, due: state.progress.reviewed + 4 });
-      if (state.progress.retry.length > 200) state.progress.retry.shift();
+  function normalizeExact(value) {
+    return String(value || "").normalize("NFC").toLocaleLowerCase("it-IT").replace(/[‘’]/g, "'").replace(/\s+/g, " ").trim();
+  }
+
+  function normalizeWithoutAccents(value) {
+    return normalizeExact(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+
+  function compareSpelling(answer, expected) {
+    var exactAnswer = normalizeExact(answer);
+    var exactExpected = normalizeExact(expected);
+    if (exactAnswer === exactExpected) return "exact";
+    if (exactAnswer && normalizeWithoutAccents(exactAnswer) === normalizeWithoutAccents(exactExpected)) return "accent";
+    return "wrong";
+  }
+
+  function recommendRating(rating) {
+    gradeButtons.forEach(function (button) {
+      button.classList.toggle("recommended", Number(button.dataset.rating) === rating);
+    });
+  }
+
+  function finishSpelling(answer, gaveUp) {
+    if (!gaveUp && !String(answer || "").trim()) {
+      elements.spellingFeedbackText.textContent = "请先输入答案，或者选择“不知道”。";
+      elements.spellingAnswer.textContent = "";
+      elements.spellingFeedback.className = "spelling-feedback is-wrong";
+      elements.spellingFeedback.hidden = false;
+      return;
     }
+    var result = gaveUp ? "wrong" : compareSpelling(answer, state.currentWord);
+    state.currentAnswerResult = result;
+    elements.spellingInput.disabled = true;
+    elements.spellingForm.hidden = true;
+    elements.spellingFeedback.hidden = false;
+    elements.spellingAnswer.textContent = state.currentWord;
+    elements.speakButton.hidden = false;
+    elements.definitionWrap.hidden = false;
+    elements.definition.textContent = state.currentDefinition || "";
+    elements.gradeActions.hidden = false;
+    if (result === "exact") {
+      elements.spellingFeedbackText.textContent = "拼写正确";
+      elements.spellingFeedback.className = "spelling-feedback is-correct";
+      elements.wordHint.textContent = "请按回忆时的实际难度评分";
+    } else if (result === "accent") {
+      elements.spellingFeedbackText.textContent = "基本正确，只需注意重音符号";
+      elements.spellingFeedback.className = "spelling-feedback is-accent";
+      elements.wordHint.textContent = "重音问题不算错误；正确写法如下";
+      recommendRating(window.FSRS.Rating.Good);
+    } else {
+      elements.spellingFeedbackText.textContent = gaveUp ? "已显示答案" : "拼写还不正确";
+      elements.spellingFeedback.className = "spelling-feedback is-wrong";
+      elements.wordHint.textContent = "建议选择“忘了”；如果只是手滑，可以按实际情况评分";
+      recommendRating(window.FSRS.Rating.Again);
+    }
+  }
+
+  function updateModeAfterRating(record, mode, rating) {
+    var passed = rating !== window.FSRS.Rating.Again;
+    record.mode.lastMode = mode;
+    if (mode === "meaning") {
+      record.stats.meaningAttempts += 1;
+      if (!passed) record.stats.meaningFailures += 1;
+      if (passed) record.mode.meaningPassed = true;
+    } else {
+      record.stats.spellingAttempts += 1;
+      if (state.currentAnswerResult === "wrong") record.stats.spellingFailures += 1;
+      if (state.currentAnswerResult === "accent") record.stats.accentWarnings += 1;
+      if (passed) record.mode.spellingPassed = true;
+    }
+    if (!passed) {
+      record.mode.forceMode = mode;
+      record.mode.nextMode = mode;
+    } else {
+      record.mode.forceMode = "";
+      record.mode.nextMode = !record.mode.meaningPassed ? "meaning" : !record.mode.spellingPassed ? "spelling" : mode === "meaning" ? "spelling" : "meaning";
+    }
+  }
+
+  function formatDue(due, now) {
+    var current = now || new Date();
+    var date = validDate(due);
+    var difference = date.getTime() - current.getTime();
+    if (difference <= 60000) return "1 分钟内";
+    if (difference < 3600000) return Math.max(1, Math.round(difference / 60000)) + " 分钟后";
+    if (localDateKey(date) === localDateKey(current)) return "今天 " + date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    var tomorrow = new Date(current);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (localDateKey(date) === localDateKey(tomorrow)) return "明天";
+    return Math.max(1, Math.round(difference / 86400000)) + " 天后";
+  }
+
+  function ratingName(rating) { return ({ 1: "忘了", 2: "勉强想起", 3: "正常想起", 4: "非常熟练" })[rating] || ""; }
+
+  function rateCurrent(rating) {
+    if (!state.currentWord || elements.gradeActions.hidden) return;
+    var now = new Date();
+    var word = state.currentWord;
+    var record = getRecord(word);
+    if (!record) return;
+    var previousCard = hydrateCard(record.fsrs, now);
+    var wasReview = previousCard.reps > 0;
+    updateModeAfterRating(record, state.currentMode, rating);
+    var nextCard = createScheduler(state.progress.settings).next(previousCard, now, rating).card;
+    if (rating !== window.FSRS.Rating.Again && record.mode.meaningPassed && !record.mode.spellingPassed) {
+      var companionDue = new Date(now.getTime() + COMPANION_DELAY_MS);
+      if (validDate(nextCard.due).getTime() > companionDue.getTime()) {
+        nextCard.due = companionDue;
+        nextCard.scheduled_days = 0;
+      }
+    }
+    record.fsrs = serializeCard(nextCard);
+    record.lastRating = rating;
+    record.lastResult = state.currentMode === "spelling" ? state.currentAnswerResult || "unknown" : "self-rated";
+    state.progress.reviewed += 1;
+    if (wasReview) state.progress.daily.reviewCount += 1;
+    state.progress.reviewLog.push({
+      w: word,
+      t: now.toISOString(),
+      m: state.currentMode,
+      g: rating,
+      r: record.lastResult,
+      ms: Math.max(0, Date.now() - state.currentStartedAt),
+      due: record.fsrs.due,
+      s: Number(record.fsrs.stability.toFixed(6)),
+      d: Number(record.fsrs.difficulty.toFixed(6))
+    });
+    if (state.progress.reviewLog.length > MAX_REVIEW_LOGS) state.progress.reviewLog.splice(0, state.progress.reviewLog.length - MAX_REVIEW_LOGS);
+    state.progress.pending = null;
     saveProgress();
+    setProgressStatus("已记录“" + ratingName(rating) + "”，下次预计 " + formatDue(record.fsrs.due, now) + "。", false);
     showNextWord();
   }
 
   function speakCurrentWord() {
-    if (!("speechSynthesis" in window) || !state.currentWord) {
-      elements.wordHint.textContent = "当前浏览器不支持语音朗读";
-      return;
-    }
+    if (!("speechSynthesis" in window) || !state.currentWord) { elements.wordHint.textContent = "当前浏览器不支持语音朗读"; return; }
     window.speechSynthesis.cancel();
     var utterance = new SpeechSynthesisUtterance(state.currentWord);
     utterance.lang = "it-IT";
     utterance.rate = 0.86;
-    var italianVoice = window.speechSynthesis
-      .getVoices()
-      .find(function (voice) {
-        return /^it([-_]|$)/i.test(voice.lang);
-      });
+    var italianVoice = window.speechSynthesis.getVoices().find(function (voice) { return /^it([-_]|$)/i.test(voice.lang); });
     if (italianVoice) utterance.voice = italianVoice;
     window.speechSynthesis.speak(utterance);
+  }
+
+  function applySettings() {
+    if (!state.progress) return;
+    state.progress.settings = sanitizeSettings({
+      dailyNew: elements.settingNew.value,
+      dailyReview: elements.settingReview.value,
+      requestRetention: Number(elements.settingRetention.value) / 100,
+      maximumInterval: state.progress.settings.maximumInterval
+    });
+    syncSettingsUI();
+    saveProgress();
+    updateStats();
+    if (state.completed) showNextWord();
   }
 
   function handleFileEvent(event) {
@@ -598,30 +1112,35 @@ require(["mdict-parser"], function (MParser) {
   elements.progressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.studyProgressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.exportProgress.addEventListener("click", exportProgressFile);
-  elements.importProgress.addEventListener("click", function () {
-    elements.studyProgressFileInput.click();
-  });
+  elements.importProgress.addEventListener("click", function () { elements.studyProgressFileInput.click(); });
   elements.changeDict.addEventListener("click", function () {
+    if (state.completionTimer) {
+      clearTimeout(state.completionTimer);
+      state.completionTimer = null;
+    }
     showView("importView");
     elements.fileInput.focus();
   });
   elements.revealButton.addEventListener("click", revealDefinition);
-  elements.againButton.addEventListener("click", function () {
-    markWord(false);
+  elements.spellingCheck.addEventListener("click", function () { finishSpelling(elements.spellingInput.value, false); });
+  elements.spellingGiveUp.addEventListener("click", function () { finishSpelling("", true); });
+  elements.spellingInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") { event.preventDefault(); finishSpelling(elements.spellingInput.value, false); }
   });
-  elements.knownButton.addEventListener("click", function () {
-    markWord(true);
+  gradeButtons.forEach(function (button) {
+    button.addEventListener("click", function () { rateCurrent(Number(button.dataset.rating)); });
   });
   elements.speakButton.addEventListener("click", speakCurrentWord);
+  elements.refreshQueue.addEventListener("click", showNextWord);
+  elements.settingNew.addEventListener("change", applySettings);
+  elements.settingReview.addEventListener("change", applySettings);
+  elements.settingRetention.addEventListener("change", applySettings);
 
   showView("loadingView");
   elements.loadingMessage.textContent = "正在检查上次使用的词库……";
-  restoreFile()
-    .then(function (file) {
-      if (file) importDictionary(file, false);
-      else showView("importView");
-    })
-    .catch(function () {
-      showView("importView");
-    });
+  if (!window.FSRS) showError("FSRS 调度组件没有加载成功，请刷新页面后重试。");
+  else restoreFile().then(function (file) {
+    if (file) importDictionary(file, false);
+    else showView("importView");
+  }).catch(function () { showView("importView"); });
 });

@@ -61,7 +61,7 @@
             </div>
             <div class="count-block" aria-label="学习统计">
               <strong id="known-count">0</strong>
-              <span>已掌握</span>
+              <span id="count-label">稳定掌握</span>
             </div>
           </div>
 
@@ -71,6 +71,7 @@
             </div>
             <span id="progress-label">0 / 0</span>
           </div>
+          <p id="daily-summary" class="daily-summary">今日新词 0 / 20 · 复习 0 / 80</p>
 
           <article class="word-card" aria-live="polite">
             <div class="card-topline">
@@ -86,6 +87,27 @@
             <div class="word-stage">
               <p id="current-word" class="current-word" lang="it">—</p>
               <p id="word-hint" class="word-hint">先想一想它的意思</p>
+
+              <form id="spelling-form" class="spelling-form" hidden>
+                <input
+                  id="spelling-input"
+                  type="text"
+                  inputmode="text"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  aria-label="输入意大利语拼写"
+                />
+                <div class="spelling-buttons">
+                  <button id="spelling-give-up" class="utility-button" type="button">不知道</button>
+                  <button id="spelling-check" class="primary-button compact-button" type="button">检查拼写</button>
+                </div>
+              </form>
+
+              <div id="spelling-feedback" class="spelling-feedback" role="status" hidden>
+                <span id="spelling-feedback-text"></span>
+                <strong id="spelling-answer" lang="it"></strong>
+              </div>
             </div>
 
             <div id="definition-wrap" class="definition-wrap" hidden>
@@ -99,11 +121,51 @@
           </div>
 
           <div id="grade-actions" class="actions grade-actions" hidden>
-            <button id="again-button" class="secondary-button danger" type="button">还不熟</button>
-            <button id="known-button" class="primary-button success" type="button">认识了</button>
+            <button class="grade-button rating-again" data-rating="1" type="button">
+              <strong>忘了</strong>
+              <small>没想起或答错</small>
+            </button>
+            <button class="grade-button rating-hard" data-rating="2" type="button">
+              <strong>勉强想起</strong>
+              <small>独立答对，但很吃力</small>
+            </button>
+            <button class="grade-button rating-good" data-rating="3" type="button">
+              <strong>正常想起</strong>
+              <small>稍有犹豫，答案正确</small>
+            </button>
+            <button class="grade-button rating-easy" data-rating="4" type="button">
+              <strong>非常熟练</strong>
+              <small>立刻而确定地答对</small>
+            </button>
+          </div>
+
+          <div id="complete-actions" class="actions single-action" hidden>
+            <button id="refresh-queue" class="secondary-button" type="button">检查新到期任务</button>
           </div>
 
           <p id="dictionary-note" class="dictionary-note"></p>
+
+          <details class="study-settings">
+            <summary>学习设置</summary>
+            <div class="settings-grid">
+              <label>
+                <span>每日新词</span>
+                <input id="setting-new" type="number" min="0" max="200" step="1" value="20" />
+              </label>
+              <label>
+                <span>每日复习</span>
+                <input id="setting-review" type="number" min="0" max="1000" step="5" value="80" />
+              </label>
+              <label>
+                <span>目标记忆率</span>
+                <span class="setting-with-unit">
+                  <input id="setting-retention" type="number" min="80" max="97" step="1" value="90" />
+                  <span>%</span>
+                </span>
+              </label>
+            </div>
+            <p>FSRS-6 会根据每次评分安排下次复习；目标记忆率越高，每日复习量通常越大。</p>
+          </details>
 
           <div class="progress-tools" aria-label="进度文件">
             <button id="export-progress" class="utility-button" type="button">导出进度</button>
@@ -131,6 +193,7 @@
       </footer>
     </div>
 
+    <script src="vendor/ts-fsrs-5.4.2.umd.js"></script>
     <script src="conf.js"></script>
     <script src="vendor/require.js" data-main="app"></script>
   </body>
