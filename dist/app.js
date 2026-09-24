@@ -13,8 +13,10 @@ require(["mdict-parser"], function (MParser) {
   var FILE_STORE = "files";
   var PROGRESS_STORE = "progress";
   var ACTIVE_FILE_KEY = "active";
+  var DICTIONARY_SET_KEY = "dictionary-set";
+  var DICTIONARY_FILE_PREFIX = "dictionary:";
   var PROGRESS_FORMAT = "parola-progress";
-  var PROGRESS_VERSION = 2;
+  var PROGRESS_VERSION = 3;
   var SHUFFLE_ALGORITHM = "mulberry32-fisher-yates-v1";
   var FSRS_ALGORITHM = "FSRS-6";
   var FSRS_LIBRARY_VERSION = "5.4.2";
@@ -33,6 +35,11 @@ require(["mdict-parser"], function (MParser) {
     fingerprint: "",
     legacyFingerprint: "",
     lookup: null,
+    dictionaries: [],
+    learningDictionaryId: "",
+    referenceDictionaries: [],
+    referenceRenderToken: 0,
+    compatibilityByFingerprint: Object.create(null),
     sourceWords: [],
     words: [],
     progress: null,
@@ -65,6 +72,10 @@ require(["mdict-parser"], function (MParser) {
     importProgress: document.getElementById("import-progress"),
     importStatus: document.getElementById("import-status"),
     progressStatus: document.getElementById("progress-status"),
+    dictionaryManager: document.getElementById("dictionary-manager"),
+    dictionaryManagerCount: document.getElementById("dictionary-manager-count"),
+    dictionaryManagerList: document.getElementById("dictionary-manager-list"),
+    startDictionarySet: document.getElementById("start-dictionary-set"),
     changeDict: document.getElementById("change-dict"),
     loadingMessage: document.getElementById("loading-message"),
     errorMessage: document.getElementById("error-message"),
@@ -91,6 +102,9 @@ require(["mdict-parser"], function (MParser) {
     speakButton: document.getElementById("speak-button"),
     definitionWrap: document.getElementById("definition-wrap"),
     definition: document.getElementById("definition"),
+    referenceDictionaries: document.getElementById("reference-dictionaries"),
+    referenceDictionaryCount: document.getElementById("reference-dictionary-count"),
+    referenceDictionaryList: document.getElementById("reference-dictionary-list"),
     revealActions: document.getElementById("reveal-actions"),
     gradeActions: document.getElementById("grade-actions"),
     revealButton: document.getElementById("reveal-button"),
@@ -106,6 +120,7 @@ require(["mdict-parser"], function (MParser) {
     reviewMore: document.getElementById("review-more"),
     refreshQueue: document.getElementById("refresh-queue"),
     dictionaryNote: document.getElementById("dictionary-note"),
+    dictionaryCompatibility: document.getElementById("dictionary-compatibility"),
     settingNew: document.getElementById("setting-new"),
     settingReview: document.getElementById("setting-review"),
     settingRetention: document.getElementById("setting-retention")
@@ -118,6 +133,134 @@ require(["mdict-parser"], function (MParser) {
       elements[name].hidden = name !== viewName;
     });
     elements.changeDict.hidden = viewName !== "studyView";
+  }
+
+  function dictionaryDisplayName(fileOrDictionary) {
+    return String((fileOrDictionary && fileOrDictionary.name) || "未命名词库").replace(/\.mdx$/i, "");
+  }
+
+  function formatFileSize(size) {
+    var megabytes = Number(size || 0) / 1048576;
+    return megabytes < 1 ? Math.max(1, Math.round(Number(size || 0) / 1024)) + " KB" : megabytes.toFixed(megabytes >= 10 ? 0 : 1) + " MB";
+  }
+
+  function dictionaryDescriptor(file, options) {
+    var source = options || {};
+    return {
+      id: fileFingerprint(file),
+      name: file.name,
+      size: file.size,
+      lastModified: file.lastModified || 0,
+      file: file,
+      referenceEnabled: source.referenceEnabled !== false,
+      lookup: null,
+      lookupPromise: null,
+      definitionCache: Object.create(null),
+      hash: source.hash || ""
+    };
+  }
+
+  function dictionaryById(id) {
+    return state.dictionaries.find(function (dictionary) { return dictionary.id === id; }) || null;
+  }
+
+  function refreshReferenceDictionaries() {
+    state.referenceDictionaries = state.dictionaries.filter(function (dictionary) {
+      return dictionary.id !== state.learningDictionaryId && dictionary.referenceEnabled !== false;
+    });
+  }
+
+  function updateDictionaryManagerRoles() {
+    Array.prototype.slice.call(elements.dictionaryManagerList.querySelectorAll("[data-dictionary-id]")).forEach(function (row) {
+      var id = row.dataset.dictionaryId;
+      var dictionary = dictionaryById(id);
+      var isLearning = id === state.learningDictionaryId;
+      var badge = row.querySelector("[data-role-badge]");
+      var reference = row.querySelector("[data-reference-toggle]");
+      row.classList.toggle("is-learning", isLearning);
+      badge.textContent = isLearning ? "学习词库" : dictionary && dictionary.referenceEnabled !== false ? "参考词库" : "已停用";
+      if (reference) {
+        reference.disabled = isLearning;
+        reference.checked = isLearning || Boolean(dictionary && dictionary.referenceEnabled !== false);
+      }
+    });
+  }
+
+  function renderDictionaryManager() {
+    elements.dictionaryManager.hidden = state.dictionaries.length === 0;
+    elements.dictionaryManagerCount.textContent = state.dictionaries.length ? state.dictionaries.length + " 部" : "";
+    elements.dictionaryManagerList.textContent = "";
+    if (!state.dictionaries.length) return;
+    if (!dictionaryById(state.learningDictionaryId)) state.learningDictionaryId = state.dictionaries[0].id;
+
+    var fragment = document.createDocumentFragment();
+    state.dictionaries.forEach(function (dictionary) {
+      var row = document.createElement("div");
+      var main = document.createElement("label");
+      var radio = document.createElement("input");
+      var text = document.createElement("span");
+      var name = document.createElement("strong");
+      var meta = document.createElement("small");
+      var controls = document.createElement("label");
+      var reference = document.createElement("input");
+      var badge = document.createElement("span");
+
+      row.className = "dictionary-manager-row";
+      row.dataset.dictionaryId = dictionary.id;
+      main.className = "dictionary-manager-main";
+      radio.type = "radio";
+      radio.name = "learning-dictionary";
+      radio.value = dictionary.id;
+      radio.checked = dictionary.id === state.learningDictionaryId;
+      name.textContent = dictionaryDisplayName(dictionary);
+      meta.textContent = formatFileSize(dictionary.size);
+      text.appendChild(name);
+      text.appendChild(meta);
+      main.appendChild(radio);
+      main.appendChild(text);
+
+      controls.className = "dictionary-reference-toggle";
+      reference.type = "checkbox";
+      reference.dataset.referenceToggle = "";
+      reference.checked = dictionary.referenceEnabled !== false;
+      badge.dataset.roleBadge = "";
+      controls.appendChild(reference);
+      controls.appendChild(badge);
+      row.appendChild(main);
+      row.appendChild(controls);
+
+      radio.addEventListener("change", function () {
+        if (!radio.checked) return;
+        state.learningDictionaryId = dictionary.id;
+        dictionary.referenceEnabled = true;
+        updateDictionaryManagerRoles();
+      });
+      reference.addEventListener("change", function () {
+        dictionary.referenceEnabled = reference.checked;
+        updateDictionaryManagerRoles();
+      });
+      fragment.appendChild(row);
+    });
+    elements.dictionaryManagerList.appendChild(fragment);
+    updateDictionaryManagerRoles();
+  }
+
+  function addDictionaryFiles(files) {
+    var added = 0;
+    var skipped = 0;
+    Array.prototype.slice.call(files || []).forEach(function (file) {
+      if (!/\.mdx$/i.test(file.name)) { skipped += 1; return; }
+      var id = fileFingerprint(file);
+      if (dictionaryById(id)) { skipped += 1; return; }
+      state.dictionaries.push(dictionaryDescriptor(file));
+      if (!state.learningDictionaryId) state.learningDictionaryId = id;
+      added += 1;
+    });
+    renderDictionaryManager();
+    if (added || skipped) {
+      setImportStatus("已加入 " + added + " 部词库" + (skipped ? "，跳过 " + skipped + " 个重复或无效文件。" : "。请选择学习词库后开始。"), false);
+    }
+    return added;
   }
 
   function progressKey() {
@@ -482,14 +625,83 @@ require(["mdict-parser"], function (MParser) {
     });
   }
 
+  function dictionaryFileRecord(dictionary) {
+    return {
+      blob: dictionary.file,
+      name: dictionary.name,
+      size: dictionary.size,
+      lastModified: dictionary.lastModified || 0,
+      hash: dictionary.hash || ""
+    };
+  }
+
+  function rememberDictionarySet() {
+    var learning = dictionaryById(state.learningDictionaryId);
+    if (!learning) return Promise.reject(new Error("请先选择学习词库。"));
+    refreshReferenceDictionaries();
+    var fileWrites = state.dictionaries.map(function (dictionary) {
+      return dbRequest(FILE_STORE, "readwrite", function (store) {
+        return store.put(dictionaryFileRecord(dictionary), DICTIONARY_FILE_PREFIX + dictionary.id);
+      });
+    });
+    return Promise.all(fileWrites).then(function () {
+      return dbRequest(FILE_STORE, "readwrite", function (store) {
+        return store.put({
+          version: 1,
+          learningId: state.learningDictionaryId,
+          dictionaries: state.dictionaries.map(function (dictionary) {
+            return {
+              id: dictionary.id,
+              referenceEnabled: dictionary.referenceEnabled !== false,
+              hash: dictionary.hash || ""
+            };
+          }),
+          updatedAt: new Date().toISOString()
+        }, DICTIONARY_SET_KEY);
+      });
+    }).then(function () { return rememberFile(learning.file); });
+  }
+
+  function fileFromRecord(record) {
+    if (!record || !record.blob) return null;
+    return new File([record.blob], record.name, {
+      type: "application/octet-stream",
+      lastModified: record.lastModified || Date.now()
+    });
+  }
+
+  function restoreDictionarySet() {
+    return dbRequest(FILE_STORE, "readonly", function (store) { return store.get(DICTIONARY_SET_KEY); })
+      .catch(function () { return null; })
+      .then(function (config) {
+        if (!config || !Array.isArray(config.dictionaries) || !config.dictionaries.length) return null;
+        return Promise.all(config.dictionaries.map(function (item) {
+          return dbRequest(FILE_STORE, "readonly", function (store) {
+            return store.get(DICTIONARY_FILE_PREFIX + item.id);
+          }).catch(function () { return null; }).then(function (record) {
+            var file = fileFromRecord(record);
+            return file ? dictionaryDescriptor(file, {
+              referenceEnabled: item.referenceEnabled !== false,
+              hash: item.hash || (record && record.hash) || ""
+            }) : null;
+          });
+        })).then(function (dictionaries) {
+          var available = dictionaries.filter(Boolean);
+          if (!available.length) return null;
+          return {
+            dictionaries: available,
+            learningId: available.some(function (dictionary) { return dictionary.id === config.learningId; })
+              ? config.learningId
+              : available[0].id
+          };
+        });
+      });
+  }
+
   function restoreFile() {
     return dbRequest(FILE_STORE, "readonly", function (store) { return store.get(ACTIVE_FILE_KEY); })
       .then(function (record) {
-        if (!record || !record.blob) return null;
-        return new File([record.blob], record.name, {
-          type: "application/octet-stream",
-          lastModified: record.lastModified || Date.now()
-        });
+        return fileFromRecord(record);
       });
   }
 
@@ -557,6 +769,15 @@ require(["mdict-parser"], function (MParser) {
         fingerprint: state.fingerprint,
         wordCount: state.sourceWords.length
       },
+      references: state.referenceDictionaries.map(function (dictionary, index) {
+        return {
+          name: dictionary.name,
+          size: dictionary.size,
+          fingerprint: dictionary.id,
+          hash: dictionary.hash || "",
+          order: index
+        };
+      }),
       progress: state.progress
     };
   }
@@ -583,7 +804,7 @@ require(["mdict-parser"], function (MParser) {
       var payload;
       try { payload = JSON.parse(text); }
       catch (error) { throw new Error("这不是有效的 JSON 进度文件。"); }
-      if (!payload || payload.format !== PROGRESS_FORMAT || [1, 2].indexOf(Number(payload.version)) < 0) {
+      if (!payload || payload.format !== PROGRESS_FORMAT || [1, 2, 3].indexOf(Number(payload.version)) < 0) {
         throw new Error("这不是受支持的 Parola 进度文件。");
       }
       if (!payload.dictionary || !payload.progress) throw new Error("进度文件缺少词库或学习记录。");
@@ -604,8 +825,32 @@ require(["mdict-parser"], function (MParser) {
     state.progress = normalizeProgress(payload.progress);
     ensureDaily();
     applyStudyOrder();
+    var missingReferences = applyImportedReferencePreferences(payload);
     syncSettingsUI();
     saveProgress();
+    return missingReferences;
+  }
+
+  function applyImportedReferencePreferences(payload) {
+    if (!Array.isArray(payload && payload.references)) return [];
+    var missing = [];
+    var ordered = [];
+    payload.references.slice().sort(function (a, b) { return Number(a.order) - Number(b.order); }).forEach(function (reference) {
+      var match = state.dictionaries.find(function (dictionary) {
+        return dictionary.id === reference.fingerprint || (dictionary.name === reference.name && dictionary.size === Number(reference.size));
+      });
+      if (!match) { missing.push(reference.name || "未命名词库"); return; }
+      match.referenceEnabled = true;
+      if (match.id !== state.learningDictionaryId && ordered.indexOf(match) < 0) ordered.push(match);
+    });
+    state.dictionaries.forEach(function (dictionary) {
+      if (dictionary.id !== state.learningDictionaryId && ordered.indexOf(dictionary) < 0) ordered.push(dictionary);
+    });
+    var learning = dictionaryById(state.learningDictionaryId);
+    state.dictionaries = (learning ? [learning] : []).concat(ordered);
+    refreshReferenceDictionaries();
+    renderDictionaryManager();
+    return missing;
   }
 
   function handleProgressFile(file, queueUntilDictionary) {
@@ -616,9 +861,9 @@ require(["mdict-parser"], function (MParser) {
         setImportStatus("已读取进度文件。现在请选择“" + payload.dictionary.name + "”词库，随后会自动恢复。", false);
         return;
       }
-      applyImportedProgress(payload);
+      var missingReferences = applyImportedProgress(payload);
       showNextWord();
-      setProgressStatus("进度已恢复，FSRS 复习日期和两种题型记录已载入。", false);
+      setProgressStatus("进度已恢复，FSRS 复习日期和两种题型记录已载入。" + (missingReferences.length ? " 尚缺少 " + missingReferences.length + " 部参考词典，可稍后导入。" : ""), false);
     }).catch(function (error) {
       if (state.file && state.progress) setProgressStatus(error.message, true);
       else setImportStatus(error.message, true);
@@ -668,16 +913,22 @@ require(["mdict-parser"], function (MParser) {
   function fileFingerprint(file) { return [file.name, file.size].join(":"); }
   function legacyFileFingerprint(file) { return [file.name, file.size, file.lastModified || 0].join(":"); }
 
-  function importDictionary(file, shouldRemember) {
-    if (!file) return;
+  function importDictionary(fileOrDictionary, shouldRemember) {
+    if (!fileOrDictionary) return;
+    var dictionary = fileOrDictionary.file ? fileOrDictionary : dictionaryDescriptor(fileOrDictionary);
+    var file = dictionary.file;
     if (!/\.mdx$/i.test(file.name)) { showError("请选择扩展名为 .mdx 的词典文件。"); return; }
     if (!window.FSRS) { showError("FSRS 调度组件没有加载成功，请刷新页面后重试。"); return; }
     if (state.completionTimer) {
       clearTimeout(state.completionTimer);
       state.completionTimer = null;
     }
+    if (!dictionaryById(dictionary.id)) state.dictionaries.push(dictionary);
+    state.learningDictionaryId = dictionary.id;
+    dictionary.referenceEnabled = true;
+    refreshReferenceDictionaries();
     state.file = file;
-    state.fingerprint = fileFingerprint(file);
+    state.fingerprint = dictionary.id;
     state.legacyFingerprint = legacyFileFingerprint(file);
     state.definitionCache = Object.create(null);
     showView("loadingView");
@@ -688,8 +939,8 @@ require(["mdict-parser"], function (MParser) {
       state.progress = progress;
       if (state.pendingProgressImport) {
         try {
-          applyImportedProgress(state.pendingProgressImport);
-          restoreMessage = "进度已恢复，FSRS 状态和题型记录已载入。";
+          var missingReferences = applyImportedProgress(state.pendingProgressImport);
+          restoreMessage = "进度已恢复，FSRS 状态和题型记录已载入。" + (missingReferences.length ? " 尚缺少 " + missingReferences.length + " 部参考词典。" : "");
           state.pendingProgressImport = null;
         } catch (error) {
           restoreMessage = error.message;
@@ -698,7 +949,7 @@ require(["mdict-parser"], function (MParser) {
       }
       ensureDaily();
       applyStudyOrder();
-      if (shouldRemember) rememberFile(file).catch(function (error) { console.warn("Dictionary could not be remembered", error); });
+      if (shouldRemember) rememberDictionarySet().catch(function (error) { console.warn("Dictionary set could not be remembered", error); });
       startStudy();
       saveProgress();
       if (restoreMessage) setProgressStatus(restoreMessage, restoreFailed);
@@ -718,11 +969,15 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function startStudy() {
+    refreshReferenceDictionaries();
     elements.dictName.textContent = state.file.name.replace(/\.mdx$/i, "");
     elements.countLabel.textContent = "稳定掌握";
-    elements.dictionaryNote.textContent = state.dictionaryCapped
+    elements.dictionaryNote.textContent = (state.dictionaryCapped
       ? "每个词库先读取前 7000 个词条；FSRS 会按到期时间安排复习。"
-      : "共读取 " + state.words.length + " 个词条；新词顺序固定，复习由 FSRS 安排。";
+      : "共读取 " + state.words.length + " 个词条；新词顺序固定，复习由 FSRS 安排。")
+      + (state.referenceDictionaries.length ? " 已启用 " + state.referenceDictionaries.length + " 部参考词典。" : "");
+    elements.dictionaryCompatibility.hidden = true;
+    renderDictionaryManager();
     syncSettingsUI();
     showView("studyView");
     setProgressStatus("");
@@ -838,6 +1093,10 @@ require(["mdict-parser"], function (MParser) {
     elements.spellingFeedback.className = "spelling-feedback";
     elements.spellingFeedbackText.textContent = "";
     elements.spellingAnswer.textContent = "";
+    state.referenceRenderToken += 1;
+    elements.referenceDictionaries.open = false;
+    elements.referenceDictionaries.hidden = true;
+    elements.referenceDictionaryList.textContent = "";
     gradeButtons.forEach(function (button) { button.classList.remove("recommended"); });
   }
 
@@ -860,6 +1119,83 @@ require(["mdict-parser"], function (MParser) {
       console.error(error);
       return "暂时没有找到这个词的释义。";
     });
+  }
+
+  function loadReferenceLookup(dictionary) {
+    if (dictionary.lookup) return Promise.resolve(dictionary.lookup);
+    if (dictionary.lookupPromise) return dictionary.lookupPromise;
+    dictionary.lookupPromise = MParser([dictionary.file]).then(function (resources) {
+      if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
+      dictionary.lookup = resources.mdx;
+      return dictionary.lookup;
+    }).catch(function (error) {
+      dictionary.lookupPromise = null;
+      throw error;
+    });
+    return dictionary.lookupPromise;
+  }
+
+  function getReferenceDefinition(dictionary, word) {
+    var key = normalizeExact(word);
+    if (hasOwn(dictionary.definitionCache, key)) return Promise.resolve(dictionary.definitionCache[key]);
+    return loadReferenceLookup(dictionary).then(function (lookup) { return lookup(word); }).then(function (definitions) {
+      var text = definitions && definitions.length ? definitionToText(definitions) : "这部词典没有收录当前单词。";
+      dictionary.definitionCache[key] = text;
+      return text;
+    });
+  }
+
+  function referenceDictionaryRow(dictionary, word, token) {
+    var details = document.createElement("details");
+    var summary = document.createElement("summary");
+    var name = document.createElement("strong");
+    var status = document.createElement("small");
+    var content = document.createElement("div");
+    var loaded = false;
+
+    details.className = "reference-dictionary-item";
+    name.textContent = dictionaryDisplayName(dictionary);
+    status.textContent = "点击读取";
+    content.className = "reference-dictionary-content";
+    content.textContent = "正在等待展开……";
+    summary.appendChild(name);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    details.appendChild(content);
+    details.addEventListener("toggle", function () {
+      if (!details.open || loaded) return;
+      loaded = true;
+      status.textContent = "正在读取";
+      content.textContent = "正在读取这部词典……";
+      getReferenceDefinition(dictionary, word).then(function (definition) {
+        if (token !== state.referenceRenderToken || word !== state.currentWord) return;
+        content.textContent = definition;
+        status.textContent = definition === "这部词典没有收录当前单词。" ? "未收录" : "已找到";
+      }).catch(function (error) {
+        if (token !== state.referenceRenderToken || word !== state.currentWord) return;
+        console.error(error);
+        content.textContent = "暂时无法读取这部词典。";
+        status.textContent = "读取失败";
+      });
+    });
+    return details;
+  }
+
+  function showReferenceDictionaries() {
+    refreshReferenceDictionaries();
+    elements.referenceDictionaryList.textContent = "";
+    if (!state.referenceDictionaries.length || !state.currentWord) {
+      elements.referenceDictionaries.hidden = true;
+      return;
+    }
+    var token = state.referenceRenderToken;
+    var fragment = document.createDocumentFragment();
+    state.referenceDictionaries.forEach(function (dictionary) {
+      fragment.appendChild(referenceDictionaryRow(dictionary, state.currentWord, token));
+    });
+    elements.referenceDictionaryList.appendChild(fragment);
+    elements.referenceDictionaryCount.textContent = state.referenceDictionaries.length + " 部参考词典";
+    elements.referenceDictionaries.hidden = false;
   }
 
   function escapeRegExp(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -1263,6 +1599,7 @@ require(["mdict-parser"], function (MParser) {
     elements.definitionWrap.hidden = false;
     elements.definition.textContent = "正在查找释义……";
     elements.wordHint.textContent = "请按实际回忆情况评分";
+    showReferenceDictionaries();
     var token = state.cardToken;
     state.currentDefinitionPromise.then(function (definition) {
       if (token !== state.cardToken) return;
@@ -1310,6 +1647,7 @@ require(["mdict-parser"], function (MParser) {
     elements.speakButton.hidden = false;
     elements.definitionWrap.hidden = false;
     elements.definition.textContent = state.currentDefinition || "";
+    showReferenceDictionaries();
     elements.gradeActions.hidden = false;
     if (result === "exact") {
       elements.spellingFeedbackText.textContent = "拼写正确";
@@ -1431,8 +1769,11 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function handleFileEvent(event) {
-    var file = event.target.files && event.target.files[0];
-    if (file) importDictionary(file, true);
+    var files = event.target.files;
+    if (files && files.length) {
+      addDictionaryFiles(files);
+      showView("importView");
+    }
     event.target.value = "";
   }
 
@@ -1444,6 +1785,12 @@ require(["mdict-parser"], function (MParser) {
 
   elements.fileInput.addEventListener("change", handleFileEvent);
   elements.errorFileInput.addEventListener("change", handleFileEvent);
+  elements.startDictionarySet.addEventListener("click", function () {
+    var learning = dictionaryById(state.learningDictionaryId);
+    if (!learning) { setImportStatus("请先导入并选择一部学习词库。", true); return; }
+    refreshReferenceDictionaries();
+    importDictionary(learning, true);
+  });
   elements.progressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.studyProgressFileInput.addEventListener("change", handleProgressFileEvent);
   elements.exportProgress.addEventListener("click", exportProgressFile);
@@ -1465,6 +1812,7 @@ require(["mdict-parser"], function (MParser) {
       clearTimeout(state.completionTimer);
       state.completionTimer = null;
     }
+    renderDictionaryManager();
     showView("importView");
     elements.fileInput.focus();
   });
@@ -1488,8 +1836,18 @@ require(["mdict-parser"], function (MParser) {
   showView("loadingView");
   elements.loadingMessage.textContent = "正在检查上次使用的词库……";
   if (!window.FSRS) showError("FSRS 调度组件没有加载成功，请刷新页面后重试。");
-  else restoreFile().then(function (file) {
-    if (file) importDictionary(file, false);
-    else showView("importView");
+  else restoreDictionarySet().then(function (restored) {
+    if (restored) {
+      state.dictionaries = restored.dictionaries;
+      state.learningDictionaryId = restored.learningId;
+      refreshReferenceDictionaries();
+      renderDictionaryManager();
+      importDictionary(dictionaryById(state.learningDictionaryId), false);
+      return null;
+    }
+    return restoreFile().then(function (file) {
+      if (file) importDictionary(file, true);
+      else showView("importView");
+    });
   }).catch(function () { showView("importView"); });
 });

@@ -26,18 +26,30 @@
             <small>意大利语单词卡</small>
           </span>
         </a>
-        <button id="change-dict" class="text-button" type="button" hidden>更换词库</button>
+        <button id="change-dict" class="text-button" type="button" hidden>管理词库</button>
       </header>
 
       <main>
         <section id="import-view" class="panel import-panel" aria-labelledby="import-title">
           <div class="eyebrow">本地词库</div>
-          <h1 id="import-title">先导入一个 MDX 词库</h1>
-          <p class="lead">词库只在这台设备的浏览器中读取，不会上传。下次打开时会自动继续。</p>
+          <h1 id="import-title">管理 MDX 词库</h1>
+          <p class="lead">选择一个学习词库，其余词库可在答题后作为参考展开。文件只在当前浏览器中读取，不会上传。</p>
           <label class="file-button" for="dict-file">
-            <span>选择 MDX 文件</span>
-            <input id="dict-file" type="file" accept=".mdx,application/octet-stream" />
+            <span>导入一个或多个 MDX 文件</span>
+            <input id="dict-file" type="file" accept=".mdx,application/octet-stream" multiple />
           </label>
+          <section id="dictionary-manager" class="dictionary-manager" aria-labelledby="dictionary-manager-title" hidden>
+            <div class="dictionary-manager-heading">
+              <div>
+                <span class="eyebrow">词库组合</span>
+                <h2 id="dictionary-manager-title">选择学习词库</h2>
+              </div>
+              <span id="dictionary-manager-count" class="dictionary-manager-count"></span>
+            </div>
+            <p class="dictionary-manager-help">学习词库决定单词顺序和进度；已启用的参考词库只用于补充释义与例句。</p>
+            <div id="dictionary-manager-list" class="dictionary-manager-list"></div>
+            <button id="start-dictionary-set" class="primary-button" type="button">使用这个词库组合</button>
+          </section>
           <div class="import-divider"><span>换设备恢复时</span></div>
           <label class="file-button outline-button" for="progress-file">
             <span>先选择进度文件</span>
@@ -120,6 +132,13 @@
             <div id="definition-wrap" class="definition-wrap" hidden>
               <div class="divider"></div>
               <div id="definition" class="definition">正在查找释义……</div>
+              <details id="reference-dictionaries" class="reference-dictionaries" hidden>
+                <summary>
+                  <span>查看其他词典</span>
+                  <small id="reference-dictionary-count"></small>
+                </summary>
+                <div id="reference-dictionary-list" class="reference-dictionary-list"></div>
+              </details>
             </div>
           </article>
 
@@ -159,6 +178,7 @@
           </div>
 
           <p id="dictionary-note" class="dictionary-note"></p>
+          <p id="dictionary-compatibility" class="dictionary-compatibility" hidden></p>
 
           <details class="study-settings">
             <summary>学习设置</summary>
@@ -248,7 +268,7 @@
           <p id="error-message">请换一个 MDX 文件再试一次。</p>
           <label class="file-button compact" for="dict-file-error">
             <span>重新选择</span>
-            <input id="dict-file-error" type="file" accept=".mdx,application/octet-stream" />
+            <input id="dict-file-error" type="file" accept=".mdx,application/octet-stream" multiple />
           </label>
         </section>
       </main>

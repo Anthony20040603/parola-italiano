@@ -251,6 +251,106 @@ h1 {
   background: var(--line);
 }
 
+.dictionary-manager {
+  margin-top: 24px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+
+.dictionary-manager-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dictionary-manager-heading .eyebrow {
+  margin-bottom: 5px;
+}
+
+.dictionary-manager-heading h2 {
+  margin: 0;
+  color: var(--navy);
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 24px;
+}
+
+.dictionary-manager-count {
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.dictionary-manager-help {
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.dictionary-manager-list {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 15px;
+}
+
+.dictionary-manager-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(16, 36, 63, 0.12);
+  border-radius: 13px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.dictionary-manager-row.is-learning {
+  border-color: rgba(37, 113, 93, 0.38);
+  background: var(--green-soft);
+}
+
+.dictionary-manager-main,
+.dictionary-reference-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.dictionary-manager-main span,
+.dictionary-manager-main strong,
+.dictionary-manager-main small {
+  display: block;
+}
+
+.dictionary-manager-main strong {
+  color: var(--navy);
+  font-size: 14px;
+}
+
+.dictionary-manager-main small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dictionary-reference-toggle {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dictionary-reference-toggle input:disabled {
+  opacity: 0.55;
+}
+
+.dictionary-manager .primary-button {
+  width: 100%;
+}
+
 .inline-status {
   max-width: 36rem;
   margin: 14px 0 0;
@@ -644,6 +744,89 @@ h1 {
   font-size: 16px;
   line-height: 1.75;
   white-space: pre-line;
+}
+
+.reference-dictionaries {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.reference-dictionaries > summary,
+.reference-dictionary-item > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--navy);
+  cursor: pointer;
+  list-style: none;
+}
+
+.reference-dictionaries > summary::-webkit-details-marker,
+.reference-dictionary-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reference-dictionaries > summary::after,
+.reference-dictionary-item > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--red);
+  font-size: 19px;
+}
+
+.reference-dictionaries[open] > summary::after,
+.reference-dictionary-item[open] > summary::after {
+  content: "−";
+}
+
+.reference-dictionaries > summary span {
+  font-weight: 750;
+}
+
+.reference-dictionaries > summary small,
+.reference-dictionary-item > summary small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reference-dictionary-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.reference-dictionary-item {
+  border: 1px solid rgba(16, 36, 63, 0.11);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.reference-dictionary-item > summary {
+  padding: 11px 0;
+}
+
+.reference-dictionary-content {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  padding: 11px 2px 13px;
+  color: #313947;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-line;
+}
+
+.dictionary-compatibility {
+  margin: 8px 0 0;
+  border-radius: 11px;
+  padding: 10px 12px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .actions {
@@ -1054,6 +1237,14 @@ footer {
 
   .settings-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .dictionary-manager-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dictionary-reference-toggle {
+    padding-left: 25px;
   }
 
   .library-progress-dialog {

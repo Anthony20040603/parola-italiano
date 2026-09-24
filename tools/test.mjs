@@ -51,7 +51,15 @@ assert.match(html, /id="open-library-progress"/);
 assert.match(html, /id="library-progress-dialog"/);
 assert.match(html, /id="learn-five-more"/);
 assert.match(html, /id="review-more"/);
+assert.match(html, /id="dictionary-manager"/);
+assert.match(html, /id="dict-file"[^>]*multiple/);
+assert.match(html, /id="reference-dictionaries"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function startMixedExtraSession\(\)/);
+assert.match(appSource, /var PROGRESS_VERSION = 3/);
+assert.match(appSource, /function rememberDictionarySet\(\)/);
+assert.match(appSource, /function restoreDictionarySet\(\)/);
+assert.match(appSource, /function loadReferenceLookup\(dictionary\)/);
+assert.match(appSource, /function showReferenceDictionaries\(\)/);
 
 console.log("Parola smoke tests passed.");
