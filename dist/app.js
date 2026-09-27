@@ -58,7 +58,9 @@ require(["mdict-parser"], function (MParser) {
     completed: false,
     completionTimer: null,
     libraryVisibleLimit: LIBRARY_PAGE_SIZE,
-    quickRatingWord: ""
+    quickRatingWord: "",
+    libraryDefinitionToken: 0,
+    libraryDefinitionWord: ""
   };
 
   var elements = {
@@ -108,6 +110,11 @@ require(["mdict-parser"], function (MParser) {
     libraryProgressList: document.getElementById("library-progress-list"),
     libraryProgressEmpty: document.getElementById("library-progress-empty"),
     libraryProgressMore: document.getElementById("library-progress-more"),
+    wordDefinitionsDialog: document.getElementById("word-definitions-dialog"),
+    closeWordDefinitions: document.getElementById("close-word-definitions"),
+    wordDefinitionsTitle: document.getElementById("word-definitions-title"),
+    wordDefinitionsSummary: document.getElementById("word-definitions-summary"),
+    wordDefinitionsList: document.getElementById("word-definitions-list"),
     quickRatingDialog: document.getElementById("quick-rating-dialog"),
     closeQuickRating: document.getElementById("close-quick-rating"),
     quickRatingTitle: document.getElementById("quick-rating-title"),
@@ -1906,9 +1913,98 @@ require(["mdict-parser"], function (MParser) {
     return parts.join(" · ");
   }
 
+  function dictionaryDefinitionForLibrary(dictionary, word) {
+    return dictionary.id === state.learningDictionaryId
+      ? getDefinition(word)
+      : getReferenceDefinition(dictionary, word);
+  }
+
+  function wordDefinitionItem(dictionary, word, token) {
+    var isLearning = dictionary.id === state.learningDictionaryId;
+    var details = document.createElement("details");
+    var summary = document.createElement("summary");
+    var name = document.createElement("strong");
+    var status = document.createElement("small");
+    var content = document.createElement("div");
+    var loaded = false;
+
+    function roleText(result) {
+      var role = isLearning ? "学习词库" : dictionary.referenceEnabled !== false ? "参考词库" : "已停用";
+      return result ? role + " · " + result : role + " · 点击读取";
+    }
+
+    function loadDefinition() {
+      if (loaded) return;
+      loaded = true;
+      status.textContent = roleText("正在读取");
+      content.textContent = "正在读取这部词典……";
+      dictionaryDefinitionForLibrary(dictionary, word).then(function (definition) {
+        if (token !== state.libraryDefinitionToken || word !== state.libraryDefinitionWord) return;
+        content.textContent = definition;
+        status.textContent = roleText(definition === "这部词典没有收录当前单词。" ? "未收录" : "已找到");
+      }).catch(function (error) {
+        if (token !== state.libraryDefinitionToken || word !== state.libraryDefinitionWord) return;
+        console.error(error);
+        content.textContent = "暂时无法读取这部词典。";
+        status.textContent = roleText("读取失败");
+      });
+    }
+
+    details.className = "reference-dictionary-item word-definition-item";
+    name.textContent = dictionaryDisplayName(dictionary);
+    status.textContent = roleText("");
+    content.className = "reference-dictionary-content word-definition-content";
+    content.textContent = "正在等待展开……";
+    summary.appendChild(name);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    details.appendChild(content);
+    details.addEventListener("toggle", function () {
+      if (details.open) loadDefinition();
+    });
+    if (isLearning) {
+      details.open = true;
+      loadDefinition();
+    }
+    return details;
+  }
+
+  function openWordDefinitions(word) {
+    if (!word || !state.dictionaries.length) return;
+    state.libraryDefinitionToken += 1;
+    state.libraryDefinitionWord = word;
+    var token = state.libraryDefinitionToken;
+    var dictionaries = state.dictionaries.slice().sort(function (a, b) {
+      if (a.id === state.learningDictionaryId) return -1;
+      if (b.id === state.learningDictionaryId) return 1;
+      return 0;
+    });
+    elements.wordDefinitionsTitle.textContent = word;
+    elements.wordDefinitionsSummary.textContent = "已导入 " + dictionaries.length + " 部词典；学习词库在最上方。";
+    elements.wordDefinitionsList.textContent = "";
+    var fragment = document.createDocumentFragment();
+    dictionaries.forEach(function (dictionary) {
+      fragment.appendChild(wordDefinitionItem(dictionary, word, token));
+    });
+    elements.wordDefinitionsList.appendChild(fragment);
+    if (typeof elements.wordDefinitionsDialog.showModal === "function") {
+      if (!elements.wordDefinitionsDialog.open) elements.wordDefinitionsDialog.showModal();
+    } else {
+      elements.wordDefinitionsDialog.setAttribute("open", "");
+    }
+  }
+
+  function closeWordDefinitions() {
+    state.libraryDefinitionToken += 1;
+    state.libraryDefinitionWord = "";
+    if (typeof elements.wordDefinitionsDialog.close === "function") elements.wordDefinitionsDialog.close();
+    else elements.wordDefinitionsDialog.removeAttribute("open");
+  }
+
   function appendLibraryRow(fragment, entry, now) {
     var row = document.createElement("div");
     var wordCell = document.createElement("div");
+    var wordButton = document.createElement("button");
     var word = document.createElement("strong");
     var practice = document.createElement("small");
     var status = document.createElement("span");
@@ -1921,15 +2017,21 @@ require(["mdict-parser"], function (MParser) {
 
     row.className = "library-progress-row";
     wordCell.className = "library-progress-word";
+    wordButton.type = "button";
+    wordButton.className = "library-word-button";
+    wordButton.setAttribute("aria-label", "查看“" + entry.word + "”在各词典中的释义");
+    wordButton.title = "查看各词典释义";
     word.textContent = entry.word;
     word.lang = "it";
+    wordButton.appendChild(word);
+    wordButton.addEventListener("click", function () { openWordDefinitions(entry.word); });
     practice.textContent = libraryPracticeText(entry.record);
     quickRate.type = "button";
     quickRate.className = "library-quick-rate";
     quickRate.textContent = state.progress.pending && state.progress.pending.word === entry.word ? "正在学习" : "直接评分";
     quickRate.disabled = state.progress.pending && state.progress.pending.word === entry.word;
     quickRate.addEventListener("click", function () { openQuickRating(entry.word); });
-    wordCell.appendChild(word);
+    wordCell.appendChild(wordButton);
     wordCell.appendChild(practice);
     wordCell.appendChild(quickRate);
 
@@ -2293,6 +2395,14 @@ require(["mdict-parser"], function (MParser) {
   elements.closeLibraryProgress.addEventListener("click", closeLibraryProgress);
   elements.libraryProgressDialog.addEventListener("click", function (event) {
     if (event.target === elements.libraryProgressDialog) closeLibraryProgress();
+  });
+  elements.closeWordDefinitions.addEventListener("click", closeWordDefinitions);
+  elements.wordDefinitionsDialog.addEventListener("click", function (event) {
+    if (event.target === elements.wordDefinitionsDialog) closeWordDefinitions();
+  });
+  elements.wordDefinitionsDialog.addEventListener("close", function () {
+    state.libraryDefinitionToken += 1;
+    state.libraryDefinitionWord = "";
   });
   elements.libraryProgressSearch.addEventListener("input", resetLibraryList);
   elements.libraryProgressFilter.addEventListener("change", resetLibraryList);

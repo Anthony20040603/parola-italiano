@@ -280,6 +280,21 @@
           </div>
         </dialog>
 
+        <dialog id="word-definitions-dialog" class="word-definitions-dialog" aria-labelledby="word-definitions-title">
+          <div class="word-definitions-sheet">
+            <header class="word-definitions-header">
+              <div>
+                <span class="eyebrow">各词典释义</span>
+                <h2 id="word-definitions-title" lang="it">—</h2>
+              </div>
+              <button id="close-word-definitions" class="dialog-close" type="button" aria-label="关闭词典释义">×</button>
+            </header>
+            <p id="word-definitions-summary" class="word-definitions-summary"></p>
+            <div id="word-definitions-list" class="word-definitions-list"></div>
+            <p class="word-definitions-note">学习词库会自动读取；其他词典点击后按需读取，避免同时解析多个大型 MDX。</p>
+          </div>
+        </dialog>
+
         <dialog id="checkin-dialog" class="checkin-dialog" aria-labelledby="checkin-title">
           <div class="checkin-sheet">
             <header class="checkin-header">

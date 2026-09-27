@@ -1109,6 +1109,7 @@ h1 {
 }
 
 .library-progress-dialog,
+.word-definitions-dialog,
 .checkin-dialog,
 .quick-rating-dialog {
   width: min(900px, calc(100% - 28px));
@@ -1123,6 +1124,7 @@ h1 {
 }
 
 .library-progress-dialog::backdrop,
+.word-definitions-dialog::backdrop,
 .checkin-dialog::backdrop,
 .quick-rating-dialog::backdrop {
   background: rgba(9, 20, 34, 0.5);
@@ -1130,11 +1132,18 @@ h1 {
 }
 
 .checkin-dialog,
-.quick-rating-dialog {
+.quick-rating-dialog,
+.word-definitions-dialog {
   width: min(620px, calc(100% - 28px));
 }
 
 .library-progress-sheet {
+  max-height: min(88dvh, 850px);
+  overflow-y: auto;
+  padding: 25px;
+}
+
+.word-definitions-sheet {
   max-height: min(88dvh, 850px);
   overflow-y: auto;
   padding: 25px;
@@ -1146,6 +1155,7 @@ h1 {
 }
 
 .library-progress-header,
+.word-definitions-header,
 .checkin-header,
 .quick-rating-header {
   display: flex;
@@ -1155,18 +1165,44 @@ h1 {
 }
 
 .library-progress-header .eyebrow,
+.word-definitions-header .eyebrow,
 .checkin-header .eyebrow,
 .quick-rating-header .eyebrow {
   margin-bottom: 6px;
 }
 
 .library-progress-header h2,
+.word-definitions-header h2,
 .checkin-header h2,
 .quick-rating-header h2 {
   margin: 0;
   color: var(--navy);
   font-family: Georgia, "Times New Roman", "Songti SC", serif;
   font-size: 30px;
+}
+
+.word-definitions-summary {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.word-definitions-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 15px;
+}
+
+.word-definition-content {
+  max-height: 320px;
+}
+
+.word-definitions-note {
+  margin: 14px 2px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .checkin-overview {
@@ -1430,6 +1466,22 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.library-word-button {
+  max-width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgba(198, 66, 54, 0.35);
+  padding: 1px 0 2px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.library-word-button:hover strong,
+.library-word-button:focus-visible strong {
+  color: var(--red);
+}
+
 .library-progress-word small,
 .library-progress-due small {
   margin-top: 4px;
@@ -1551,6 +1603,7 @@ footer {
   }
 
   .library-progress-dialog,
+  .word-definitions-dialog,
   .checkin-dialog,
   .quick-rating-dialog {
     width: 100%;
@@ -1561,6 +1614,11 @@ footer {
   }
 
   .library-progress-sheet {
+    max-height: 92dvh;
+    padding: 21px 16px max(20px, env(safe-area-inset-bottom));
+  }
+
+  .word-definitions-sheet {
     max-height: 92dvh;
     padding: 21px 16px max(20px, env(safe-area-inset-bottom));
   }
