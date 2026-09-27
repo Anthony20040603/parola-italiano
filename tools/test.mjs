@@ -111,7 +111,7 @@ assert.match(html, /id="dict-file"[^>]*multiple/);
 assert.match(html, /id="reference-dictionaries"/);
 assert.match(html, /id="retry-definition"/);
 assert.match(html, /id="reload-page"/);
-assert.match(html, /class="version-label">v1\.8\.3</);
+assert.match(html, /class="version-label">v1\.8\.4</);
 assert.match(html, /class="reset-data-button" href="reset\.html"/);
 assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
