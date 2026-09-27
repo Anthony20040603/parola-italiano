@@ -23,6 +23,8 @@ require(["mdict-parser"], function (MParser) {
   var COMPANION_DELAY_MS = 10 * 60 * 1000;
   var MAX_REVIEW_LOGS = 50000;
   var LIBRARY_PAGE_SIZE = 120;
+  var DEFINITION_TIMEOUT_MS = 20000;
+  var DEFINITION_TIMEOUT_TEXT = "释义查找超时。请稍后重新查找；学习进度不会受到影响。";
   var DEFAULT_SETTINGS = {
     dailyNew: 20,
     dailyReview: 80,
@@ -41,6 +43,8 @@ require(["mdict-parser"], function (MParser) {
     referenceRenderToken: 0,
     compatibilityByFingerprint: Object.create(null),
     compatibilityScanToken: 0,
+    postStartTaskToken: 0,
+    learningLookupChain: Promise.resolve(),
     sourceWords: [],
     words: [],
     progress: null,
@@ -126,6 +130,7 @@ require(["mdict-parser"], function (MParser) {
     speakButton: document.getElementById("speak-button"),
     definitionWrap: document.getElementById("definition-wrap"),
     definition: document.getElementById("definition"),
+    retryDefinition: document.getElementById("retry-definition"),
     referenceDictionaries: document.getElementById("reference-dictionaries"),
     referenceDictionaryCount: document.getElementById("reference-dictionary-count"),
     referenceDictionaryList: document.getElementById("reference-dictionary-list"),
@@ -183,9 +188,12 @@ require(["mdict-parser"], function (MParser) {
       referenceEnabled: source.referenceEnabled !== false,
       lookup: null,
       lookupPromise: null,
+      lookupChain: Promise.resolve(),
       definitionCache: Object.create(null),
       hash: source.hash || "",
-      compatibility: source.compatibility || null
+      compatibility: source.compatibility || null,
+      words: Array.isArray(source.words) ? source.words.slice(0, MAX_WORDS) : null,
+      wordsRestored: Array.isArray(source.words) && source.words.length > 0
     };
   }
 
@@ -905,32 +913,46 @@ require(["mdict-parser"], function (MParser) {
     };
   }
 
+  function dictionarySetRecord() {
+    return {
+      version: 1,
+      learningId: state.learningDictionaryId,
+      dictionaries: state.dictionaries.map(function (dictionary) {
+        return {
+          id: dictionary.id,
+          referenceEnabled: dictionary.referenceEnabled !== false,
+          hash: dictionary.hash || "",
+          compatibility: dictionary.compatibility || null,
+          words: dictionary.words || null
+        };
+      }),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function rememberDictionaryMetadata() {
+    return dbRequest(FILE_STORE, "readwrite", function (store) {
+      return store.put(dictionarySetRecord(), DICTIONARY_SET_KEY);
+    });
+  }
+
   function rememberDictionarySet() {
     var learning = dictionaryById(state.learningDictionaryId);
     if (!learning) return Promise.reject(new Error("请先选择学习词库。"));
     refreshReferenceDictionaries();
-    var fileWrites = state.dictionaries.map(function (dictionary) {
-      return dbRequest(FILE_STORE, "readwrite", function (store) {
-        return store.put(dictionaryFileRecord(dictionary), DICTIONARY_FILE_PREFIX + dictionary.id);
+    return openDatabase().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var transaction = db.transaction(FILE_STORE, "readwrite");
+        var store = transaction.objectStore(FILE_STORE);
+        state.dictionaries.forEach(function (dictionary) {
+          store.put(dictionaryFileRecord(dictionary), DICTIONARY_FILE_PREFIX + dictionary.id);
+        });
+        store.put(dictionarySetRecord(), DICTIONARY_SET_KEY);
+        transaction.oncomplete = function () { db.close(); resolve(); };
+        transaction.onerror = function () { var error = transaction.error; db.close(); reject(error); };
+        transaction.onabort = function () { var error = transaction.error; db.close(); reject(error); };
       });
     });
-    return Promise.all(fileWrites).then(function () {
-      return dbRequest(FILE_STORE, "readwrite", function (store) {
-        return store.put({
-          version: 1,
-          learningId: state.learningDictionaryId,
-          dictionaries: state.dictionaries.map(function (dictionary) {
-            return {
-              id: dictionary.id,
-              referenceEnabled: dictionary.referenceEnabled !== false,
-              hash: dictionary.hash || "",
-              compatibility: dictionary.compatibility || null
-            };
-          }),
-          updatedAt: new Date().toISOString()
-        }, DICTIONARY_SET_KEY);
-      });
-    }).then(function () { return rememberFile(learning.file); });
   }
 
   function fileFromRecord(record) {
@@ -941,23 +963,40 @@ require(["mdict-parser"], function (MParser) {
     });
   }
 
+  function readDictionaryFileRecords(items) {
+    return openDatabase().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var records = new Array(items.length);
+        var transaction = db.transaction(FILE_STORE, "readonly");
+        var store = transaction.objectStore(FILE_STORE);
+        items.forEach(function (item, index) {
+          var request = store.get(DICTIONARY_FILE_PREFIX + item.id);
+          request.onsuccess = function () { records[index] = request.result || null; };
+        });
+        transaction.oncomplete = function () { db.close(); resolve(records); };
+        transaction.onerror = function () { var error = transaction.error; db.close(); reject(error); };
+        transaction.onabort = function () { var error = transaction.error; db.close(); reject(error); };
+      });
+    });
+  }
+
   function restoreDictionarySet() {
     return dbRequest(FILE_STORE, "readonly", function (store) { return store.get(DICTIONARY_SET_KEY); })
       .catch(function () { return null; })
       .then(function (config) {
         if (!config || !Array.isArray(config.dictionaries) || !config.dictionaries.length) return null;
-        return Promise.all(config.dictionaries.map(function (item) {
-          return dbRequest(FILE_STORE, "readonly", function (store) {
-            return store.get(DICTIONARY_FILE_PREFIX + item.id);
-          }).catch(function () { return null; }).then(function (record) {
+        return readDictionaryFileRecords(config.dictionaries).then(function (records) {
+          return config.dictionaries.map(function (item, index) {
+            var record = records[index];
             var file = fileFromRecord(record);
             return file ? dictionaryDescriptor(file, {
               referenceEnabled: item.referenceEnabled !== false,
               hash: item.hash || (record && record.hash) || "",
-              compatibility: item.compatibility || null
+              compatibility: item.compatibility || null,
+              words: item.words || null
             }) : null;
           });
-        })).then(function (dictionaries) {
+        }).catch(function () { return []; }).then(function (dictionaries) {
           var available = dictionaries.filter(Boolean);
           if (!available.length) return null;
           return {
@@ -1166,24 +1205,107 @@ require(["mdict-parser"], function (MParser) {
     return words;
   }
 
-  function parseDictionary(file) {
+  function parseDictionary(dictionary) {
+    var file = dictionary.file;
     elements.loadingMessage.textContent = "正在读取词典结构……";
-    return MParser([file]).then(function (resources) {
+    return promiseWithTimeout(MParser([file]), 90000, "读取词典结构超时，请返回后重新选择词库。").then(function (resources) {
       if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
       return resources.mdx;
     }).then(function (lookup) {
       state.lookup = lookup;
+      if (dictionary.words && dictionary.words.length) {
+        elements.loadingMessage.textContent = "正在恢复已保存的学习词表……";
+        state.sourceWords = dictionary.words.slice(0, MAX_WORDS);
+        state.dictionaryCapped = state.sourceWords.length >= MAX_WORDS;
+        return null;
+      }
       elements.loadingMessage.textContent = "正在准备学习词条……";
-      return lookup({ phrase: "", max: MAX_WORDS });
+      return promiseWithTimeout(lookup({ phrase: "", max: MAX_WORDS }), 90000, "准备学习词表超时，请返回后重试。");
     }).then(function (entries) {
+      if (entries === null) return;
       state.dictionaryCapped = entries.length >= MAX_WORDS;
       state.sourceWords = uniqueStudyWords(entries);
       if (!state.sourceWords.length) throw new Error("没有识别到适合学习的意大利语词条");
+      dictionary.words = state.sourceWords.slice();
     });
   }
 
   function fileFingerprint(file) { return [file.name, file.size].join(":"); }
   function legacyFileFingerprint(file) { return [file.name, file.size, file.lastModified || 0].join(":"); }
+
+  function promiseWithTimeout(promise, timeoutMs, message) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error(message || "操作超时"));
+      }, timeoutMs);
+      Promise.resolve(promise).then(function (value) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }, function (error) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
+  function serializedLookup(holder, chainKey, lookup, query, timeoutMs) {
+    var previous = holder[chainKey] || Promise.resolve();
+    var run = previous.catch(function () {}).then(function () {
+      return promiseWithTimeout(
+        Promise.resolve().then(function () { return lookup(query); }),
+        timeoutMs || DEFINITION_TIMEOUT_MS,
+        "词典查询超时"
+      );
+    });
+    holder[chainKey] = run.then(function () {}, function () {});
+    return run;
+  }
+
+  function learningLookup(query) {
+    return serializedLookup(state, "learningLookupChain", state.lookup, query, DEFINITION_TIMEOUT_MS);
+  }
+
+  function idleTurn(timeout) {
+    return new Promise(function (resolve) {
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(function () { resolve(); }, { timeout: timeout || 800 });
+      } else {
+        setTimeout(resolve, Math.min(timeout || 120, 120));
+      }
+    });
+  }
+
+  function schedulePostStartTasks(dictionary, shouldRemember) {
+    var token = ++state.postStartTaskToken;
+    var fingerprint = dictionary.id;
+    var firstDefinition = state.currentDefinitionPromise || Promise.resolve();
+    firstDefinition.catch(function () {}).then(function () { return idleTurn(500); }).then(function () {
+      if (token !== state.postStartTaskToken || fingerprint !== state.fingerprint) return null;
+      if (!shouldRemember && dictionary.wordsRestored) return null;
+      return rememberDictionarySet().then(function () {
+        dictionary.wordsRestored = true;
+      }).catch(function (error) {
+        console.warn("Dictionary set could not be remembered", error);
+        setProgressStatus("词库没有完整保存在浏览器中；本次仍可学习，稍后请重新导入词库。", true);
+      });
+    }).then(function () { return idleTurn(800); }).then(function () {
+      if (token !== state.postStartTaskToken || fingerprint !== state.fingerprint) return null;
+      return scanLearningCompatibility(dictionary);
+    }).catch(function (error) {
+      console.warn("Dictionary compatibility scan failed", error);
+      if (token !== state.postStartTaskToken || fingerprint !== state.fingerprint) return;
+      elements.dictionaryCompatibility.textContent = "暂时无法完成拼写提示兼容率抽样；学习功能不受影响。";
+      elements.dictionaryCompatibility.classList.add("status-error");
+      elements.dictionaryCompatibility.hidden = false;
+    });
+  }
 
   function importDictionary(fileOrDictionary, shouldRemember) {
     if (!fileOrDictionary) return;
@@ -1203,9 +1325,10 @@ require(["mdict-parser"], function (MParser) {
     state.fingerprint = dictionary.id;
     state.legacyFingerprint = legacyFileFingerprint(file);
     state.definitionCache = Object.create(null);
+    state.learningLookupChain = Promise.resolve();
     showView("loadingView");
 
-    parseDictionary(file).then(function () { return loadProgress(); }).then(function (progress) {
+    parseDictionary(dictionary).then(function () { return loadProgress(); }).then(function (progress) {
       var restoreMessage = "";
       var restoreFailed = false;
       state.progress = progress;
@@ -1221,13 +1344,13 @@ require(["mdict-parser"], function (MParser) {
       }
       ensureDaily();
       applyStudyOrder();
-      if (shouldRemember) rememberDictionarySet().catch(function (error) { console.warn("Dictionary set could not be remembered", error); });
       startStudy();
       saveProgress();
+      schedulePostStartTasks(dictionary, shouldRemember);
       if (restoreMessage) setProgressStatus(restoreMessage, restoreFailed);
     }).catch(function (error) {
       console.error(error);
-      showError(error && /FSRS/.test(error.message) ? error.message : "无法解析这个词库。它可能使用了加密、特殊压缩格式，或不是标准的 MDict 2.0 文件。");
+      showError(error && /(?:FSRS|超时)/.test(error.message) ? error.message : "无法解析这个词库。它可能使用了加密、特殊压缩格式，或不是标准的 MDict 2.0 文件。");
     });
   }
 
@@ -1254,15 +1377,8 @@ require(["mdict-parser"], function (MParser) {
     showView("studyView");
     setProgressStatus("");
     showNextWord();
-    scanLearningCompatibility(dictionaryById(state.learningDictionaryId)).catch(function (error) {
-      console.warn("Dictionary compatibility scan failed", error);
-      elements.dictionaryCompatibility.textContent = "暂时无法完成拼写提示兼容率抽样；学习功能不受影响。";
-      elements.dictionaryCompatibility.classList.add("status-error");
-      elements.dictionaryCompatibility.hidden = false;
-    });
-    Promise.all(state.dictionaries.map(ensureDictionaryHash)).then(function () {
-      return rememberDictionarySet();
-    }).catch(function () {});
+    var learning = dictionaryById(state.learningDictionaryId);
+    if (learning && learning.compatibility) showCompatibilityResult(learning);
   }
 
   function cardIsDue(record, now) { return validDate(record.fsrs.due).getTime() <= now.getTime(); }
@@ -1363,6 +1479,7 @@ require(["mdict-parser"], function (MParser) {
     state.currentAnswerResult = "";
     elements.currentWord.classList.remove("spelling-prompt", "completion-title");
     elements.definitionWrap.hidden = true;
+    elements.retryDefinition.hidden = true;
     elements.revealActions.hidden = true;
     elements.gradeActions.hidden = true;
     elements.spellingForm.hidden = true;
@@ -1393,12 +1510,13 @@ require(["mdict-parser"], function (MParser) {
 
   function getDefinition(word) {
     if (hasOwn(state.definitionCache, word)) return Promise.resolve(state.definitionCache[word]);
-    return state.lookup(word).then(function (definitions) {
+    return learningLookup(word).then(function (definitions) {
       var text = definitionToText(definitions);
       state.definitionCache[word] = text;
       return text;
     }).catch(function (error) {
       console.error(error);
+      if (error && /超时/.test(error.message)) return DEFINITION_TIMEOUT_TEXT;
       return "暂时没有找到这个词的释义。";
     });
   }
@@ -1406,7 +1524,7 @@ require(["mdict-parser"], function (MParser) {
   function loadReferenceLookup(dictionary) {
     if (dictionary.lookup) return Promise.resolve(dictionary.lookup);
     if (dictionary.lookupPromise) return dictionary.lookupPromise;
-    dictionary.lookupPromise = MParser([dictionary.file]).then(function (resources) {
+    dictionary.lookupPromise = promiseWithTimeout(MParser([dictionary.file]), 90000, "读取参考词典结构超时").then(function (resources) {
       if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
       dictionary.lookup = resources.mdx;
       return dictionary.lookup;
@@ -1420,7 +1538,9 @@ require(["mdict-parser"], function (MParser) {
   function getReferenceDefinition(dictionary, word) {
     var key = normalizeExact(word);
     if (hasOwn(dictionary.definitionCache, key)) return Promise.resolve(dictionary.definitionCache[key]);
-    return loadReferenceLookup(dictionary).then(function (lookup) { return lookup(word); }).then(function (definitions) {
+    return loadReferenceLookup(dictionary).then(function (lookup) {
+      return serializedLookup(dictionary, "lookupChain", lookup, word, DEFINITION_TIMEOUT_MS);
+    }).then(function (definitions) {
       var text = definitions && definitions.length ? definitionToText(definitions) : "这部词典没有收录当前单词。";
       dictionary.definitionCache[key] = text;
       return text;
@@ -1456,8 +1576,9 @@ require(["mdict-parser"], function (MParser) {
       }).catch(function (error) {
         if (token !== state.referenceRenderToken || word !== state.currentWord) return;
         console.error(error);
-        content.textContent = "暂时无法读取这部词典。";
-        status.textContent = "读取失败";
+        loaded = false;
+        content.textContent = "暂时无法读取这部词典。收起后可重新展开重试。";
+        status.textContent = "读取失败，可重试";
       });
     });
     return details;
@@ -1584,7 +1705,8 @@ require(["mdict-parser"], function (MParser) {
     var token = ++state.compatibilityScanToken;
     var fingerprint = dictionary.id;
     var lookup = state.lookup;
-    var words = compatibilitySample(state.sourceWords, 120);
+    var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+    var words = compatibilitySample(state.sourceWords, isIOS ? 48 : 80);
     var counts = { high: 0, medium: 0, low: 0, none: 0 };
     var position = 0;
     elements.dictionaryCompatibility.hidden = false;
@@ -1593,7 +1715,7 @@ require(["mdict-parser"], function (MParser) {
 
     function nextBatch() {
       if (token !== state.compatibilityScanToken || fingerprint !== state.fingerprint) return Promise.resolve(null);
-      var batch = words.slice(position, position + 8);
+      var batch = words.slice(position, position + 1);
       position += batch.length;
       if (!batch.length) {
         var usable = counts.high + counts.medium;
@@ -1610,15 +1732,18 @@ require(["mdict-parser"], function (MParser) {
         state.compatibilityByFingerprint[dictionary.id] = result;
         showCompatibilityResult(dictionary);
         renderDictionaryManager();
-        rememberDictionarySet().catch(function () {});
+        rememberDictionaryMetadata().catch(function () {});
         return result;
       }
       return Promise.all(batch.map(function (word) {
-        return lookup(word).then(function (definitions) {
+        return serializedLookup(state, "learningLookupChain", lookup, word, DEFINITION_TIMEOUT_MS).then(function (definitions) {
           var analysis = analyzeChineseClue(definitionToText(definitions), word);
           counts[hasOwn(counts, analysis.confidence) ? analysis.confidence : "none"] += 1;
-        }).catch(function () { counts.none += 1; });
-      })).then(nextBatch);
+        }).catch(function (error) {
+          if (error && /超时/.test(error.message)) throw error;
+          counts.none += 1;
+        });
+      })).then(function () { return idleTurn(300); }).then(nextBatch);
     }
     return nextBatch();
   }
@@ -1941,12 +2066,15 @@ require(["mdict-parser"], function (MParser) {
       dictionaryDefinitionForLibrary(dictionary, word).then(function (definition) {
         if (token !== state.libraryDefinitionToken || word !== state.libraryDefinitionWord) return;
         content.textContent = definition;
-        status.textContent = roleText(definition === "这部词典没有收录当前单词。" ? "未收录" : "已找到");
+        var failed = definition === DEFINITION_TIMEOUT_TEXT || definition === "暂时没有找到这个词的释义。";
+        loaded = !failed;
+        status.textContent = roleText(failed ? "读取失败，可重试" : definition === "这部词典没有收录当前单词。" ? "未收录" : "已找到");
       }).catch(function (error) {
         if (token !== state.libraryDefinitionToken || word !== state.libraryDefinitionWord) return;
         console.error(error);
-        content.textContent = "暂时无法读取这部词典。";
-        status.textContent = roleText("读取失败");
+        loaded = false;
+        content.textContent = "暂时无法读取这部词典。收起后可重新展开重试。";
+        status.textContent = roleText("读取失败，可重试");
       });
     }
 
@@ -2145,7 +2273,27 @@ require(["mdict-parser"], function (MParser) {
     state.currentDefinitionPromise.then(function (definition) {
       if (token !== state.cardToken) return;
       state.currentDefinition = definition;
-      elements.definition.textContent = definition;
+      renderDefinitionText(definition);
+    });
+  }
+
+  function renderDefinitionText(definition) {
+    elements.definition.textContent = definition || "暂时没有找到这个词的释义。";
+    elements.retryDefinition.hidden = definition !== DEFINITION_TIMEOUT_TEXT && definition !== "暂时没有找到这个词的释义。";
+  }
+
+  function retryCurrentDefinition() {
+    if (!state.currentWord) return;
+    var word = state.currentWord;
+    var token = state.cardToken;
+    delete state.definitionCache[word];
+    elements.definition.textContent = "正在重新查找释义……";
+    elements.retryDefinition.hidden = true;
+    state.currentDefinitionPromise = getDefinition(word);
+    state.currentDefinitionPromise.then(function (definition) {
+      if (token !== state.cardToken || word !== state.currentWord) return;
+      state.currentDefinition = definition;
+      renderDefinitionText(definition);
     });
   }
 
@@ -2187,7 +2335,7 @@ require(["mdict-parser"], function (MParser) {
     elements.spellingAnswer.textContent = state.currentWord;
     elements.speakButton.hidden = false;
     elements.definitionWrap.hidden = false;
-    elements.definition.textContent = state.currentDefinition || "";
+    renderDefinitionText(state.currentDefinition || "");
     showReferenceDictionaries();
     elements.gradeActions.hidden = false;
     if (result === "exact") {
@@ -2428,6 +2576,7 @@ require(["mdict-parser"], function (MParser) {
     elements.fileInput.focus();
   });
   elements.revealButton.addEventListener("click", revealDefinition);
+  elements.retryDefinition.addEventListener("click", retryCurrentDefinition);
   elements.spellingCheck.addEventListener("click", function () { finishSpelling(elements.spellingInput.value, false); });
   elements.spellingGiveUp.addEventListener("click", function () { finishSpelling("", true); });
   elements.spellingInput.addEventListener("keydown", function (event) {
