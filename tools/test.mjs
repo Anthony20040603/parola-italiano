@@ -5,6 +5,8 @@ import vm from "node:vm";
 
 const appSource = await readFile(new URL("../dist/app.js", import.meta.url), "utf8");
 const html = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
+const resetHtml = await readFile(new URL("../dist/reset.html", import.meta.url), "utf8");
+const resetSource = await readFile(new URL("../dist/reset.js", import.meta.url), "utf8");
 const spellingFunctions = appSource.match(
   /  function normalizeExact[\s\S]*?(?=\n  function recommendRating)/,
 );
@@ -110,15 +112,18 @@ assert.match(html, /id="reference-dictionaries"/);
 assert.match(html, /id="retry-definition"/);
 assert.match(html, /id="reload-page"/);
 assert.match(html, /class="version-label">v1\.8\.3</);
-assert.match(html, /class="reset-local-data reset-data-button"/);
+assert.match(html, /class="reset-data-button" href="reset\.html"/);
 assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function openWordDefinitions\(word\)/);
 assert.match(appSource, /if \(dictionary\.file && !dictionary\.stored\)/);
 assert.match(appSource, /store\.delete\(ACTIVE_FILE_KEY\)/);
 assert.match(appSource, /if \(canReuseLookup\)/);
-assert.match(appSource, /function resetLocalData\(\)/);
-assert.match(appSource, /indexedDB\.deleteDatabase\(DB_NAME\)/);
+assert.match(resetHtml, /id="clear-local-data"/);
+assert.match(resetHtml, /src="reset\.js"/);
+assert.doesNotMatch(resetHtml, /(?:app\.js|mdict-parser|require\.js)/);
+assert.match(resetSource, /indexedDB\.deleteDatabase\(DB_NAME\)/);
+assert.doesNotMatch(appSource, /function resetLocalData\(\)/);
 assert.match(appSource, /function wordDefinitionItem\(dictionary, word, token\)/);
 assert.match(appSource, /function startMixedExtraSession\(\)/);
 assert.match(appSource, /var PROGRESS_VERSION = 4/);

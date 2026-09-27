@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#10243f" />
+    <title>重置本机数据 · Parola</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="返回 Parola">
+          <span class="brand-mark" aria-hidden="true">P</span>
+          <span>
+            <strong>Parola <span class="version-label">v1.8.3</span></strong>
+            <small>独立数据重置</small>
+          </span>
+        </a>
+      </header>
+
+      <main>
+        <section class="panel reset-panel" aria-labelledby="reset-title">
+          <div class="eyebrow">Safari 故障恢复</div>
+          <h1 id="reset-title">清除本机数据</h1>
+          <p class="lead">此页面不会加载任何词典或学习任务，因此即使主页面无法使用，也可以独立清理旧版本留下的数据。</p>
+          <div class="reset-warning">
+            <strong>清除后无法撤销</strong>
+            <span>当前浏览器中的全部 Parola 词库、学习进度和打卡记录都会删除。其他网站的数据不会受到影响。</span>
+          </div>
+          <div class="reset-actions">
+            <button id="clear-local-data" class="primary-button danger-button" type="button">确认清除全部数据</button>
+            <a class="secondary-button" href="./">取消并返回</a>
+          </div>
+          <p id="reset-status" class="inline-status reset-status" role="status" hidden></p>
+          <a id="return-after-reset" class="primary-button reset-return" href="./" hidden>重新打开 Parola</a>
+        </section>
+      </main>
+
+      <footer>
+        <span>只清除当前浏览器中的 Parola 数据</span>
+      </footer>
+    </div>
+    <script src="reset.js"></script>
+  </body>
+</html>

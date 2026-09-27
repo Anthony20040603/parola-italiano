@@ -57,14 +57,14 @@
           </label>
           <p id="import-status" class="inline-status" role="status" hidden></p>
           <p class="fine-print">建议先使用“意语5000基础词.mdx”。首次解析可能需要几秒钟。</p>
-          <button class="reset-local-data reset-data-button" type="button">清除本机数据并重新开始</button>
+          <a class="reset-data-button" href="reset.html">清除本机数据并重新开始</a>
         </section>
 
         <section id="loading-view" class="panel loading-panel" aria-live="polite" hidden>
           <div class="loader" aria-hidden="true"></div>
           <h1>正在整理词库</h1>
           <p id="loading-message">正在读取词条，请稍候……</p>
-          <button class="reset-local-data reset-data-button" type="button">一直无法载入？清除本机数据</button>
+          <a class="reset-data-button" href="reset.html">一直无法载入？打开独立重置页面</a>
         </section>
 
         <section id="study-view" class="study-layout" hidden>
@@ -355,7 +355,7 @@
             <input id="dict-file-error" type="file" accept=".mdx,application/octet-stream" multiple />
           </label>
           <button id="reload-page" class="secondary-button compact-button" type="button">重新加载页面</button>
-          <button class="reset-local-data reset-data-button" type="button">清除本机数据并重新开始</button>
+          <a class="reset-data-button" href="reset.html">清除本机数据并重新开始</a>
         </section>
       </main>
 

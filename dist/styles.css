@@ -394,14 +394,10 @@ h1 {
   background: transparent;
   cursor: pointer;
   font-size: 12px;
+  text-align: center;
   text-decoration: underline;
   text-decoration-color: rgba(159, 48, 40, 0.34);
   text-underline-offset: 3px;
-}
-
-.reset-data-button:disabled {
-  opacity: 0.58;
-  cursor: wait;
 }
 
 .progress-tools {
@@ -446,6 +442,56 @@ h1 {
 
 .loading-panel .reset-data-button {
   margin-top: 22px;
+}
+
+.reset-panel {
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.reset-warning {
+  margin: 22px 0;
+  border: 1px solid rgba(198, 66, 54, 0.22);
+  border-radius: 16px;
+  padding: 16px 18px;
+  color: #8f2b24;
+  background: var(--red-soft);
+  line-height: 1.6;
+}
+
+.reset-warning strong,
+.reset-warning span {
+  display: block;
+}
+
+.reset-warning span {
+  margin-top: 5px;
+  font-size: 13px;
+}
+
+.reset-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr);
+  gap: 10px;
+}
+
+.danger-button {
+  background: var(--red);
+  box-shadow: 0 12px 25px rgba(198, 66, 54, 0.2);
+}
+
+.reset-actions .secondary-button,
+.reset-return {
+  text-decoration: none;
+}
+
+.reset-status {
+  max-width: none;
+}
+
+.reset-return {
+  width: 100%;
+  margin-top: 14px;
 }
 
 .loader {
@@ -1622,6 +1668,10 @@ footer {
 
   .panel {
     border-radius: 24px;
+  }
+
+  .reset-actions {
+    grid-template-columns: 1fr;
   }
 
   .study-meta {

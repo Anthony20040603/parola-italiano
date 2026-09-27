@@ -82,7 +82,6 @@ require(["mdict-parser"], function (MParser) {
     fileInput: document.getElementById("dict-file"),
     errorFileInput: document.getElementById("dict-file-error"),
     reloadPage: document.getElementById("reload-page"),
-    resetLocalData: Array.prototype.slice.call(document.querySelectorAll(".reset-local-data")),
     progressFileInput: document.getElementById("progress-file"),
     studyProgressFileInput: document.getElementById("study-progress-file"),
     exportProgress: document.getElementById("export-progress"),
@@ -1122,96 +1121,6 @@ require(["mdict-parser"], function (MParser) {
       });
     }).catch(function (error) {
       console.warn("Progress could not be saved to IndexedDB", error);
-    });
-  }
-
-  function setResetButtonsBusy(busy) {
-    elements.resetLocalData.forEach(function (button) {
-      button.disabled = busy;
-      button.textContent = busy ? "正在清除，请稍候……" : button.dataset.resetLabel;
-    });
-  }
-
-  function removeParolaStorage(storage) {
-    try {
-      for (var index = storage.length - 1; index >= 0; index -= 1) {
-        var key = storage.key(index);
-        if (key && key.indexOf("parola-") === 0) storage.removeItem(key);
-      }
-    } catch (error) {
-      console.warn("Web storage could not be cleared", error);
-    }
-  }
-
-  function deleteParolaDatabase() {
-    if (!("indexedDB" in window)) return Promise.resolve();
-    state.openDatabases.slice().forEach(closeDatabase);
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) return;
-        settled = true;
-        reject(new Error("Safari 仍在占用本地数据库，请完全关闭此页面后再试一次。"));
-      }, 10000);
-      var request = indexedDB.deleteDatabase(DB_NAME);
-      request.onsuccess = function () {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve();
-      };
-      request.onerror = function () {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(request.error || new Error("无法删除本地数据库。"));
-      };
-      request.onblocked = function () {
-        state.openDatabases.slice().forEach(closeDatabase);
-      };
-    });
-  }
-
-  function clearParolaCaches() {
-    if (!("caches" in window)) return Promise.resolve();
-    return caches.keys().then(function (names) {
-      return Promise.all(names.filter(function (name) {
-        return String(name).toLocaleLowerCase().indexOf("parola") >= 0;
-      }).map(function (name) { return caches.delete(name); }));
-    }).catch(function (error) {
-      console.warn("App caches could not be cleared", error);
-    });
-  }
-
-  function resetLocalData() {
-    if (state.resettingData) return;
-    var confirmed = window.confirm("这会删除当前浏览器中的全部 Parola 词库、学习进度和打卡记录，且无法撤销。建议先导出进度文件。\n\n确定清除并重新开始吗？");
-    if (!confirmed) return;
-    state.resettingData = true;
-    state.postStartTaskToken += 1;
-    state.compatibilityScanToken += 1;
-    state.cardToken += 1;
-    state.referenceRenderToken += 1;
-    state.libraryDefinitionToken += 1;
-    state.mdictTaskQueue.splice(0).forEach(function (task) { task.reject(cancelledMdictTaskError()); });
-    setResetButtonsBusy(true);
-    Promise.all([
-      Promise.resolve(state.saveChain).catch(function () {}),
-      Promise.resolve(state.dictionarySaveChain).catch(function () {})
-    ]).then(function () {
-      return deleteParolaDatabase();
-    }).then(function () {
-      removeParolaStorage(window.localStorage);
-      removeParolaStorage(window.sessionStorage);
-      return clearParolaCaches();
-    }).then(function () {
-      var path = window.location.pathname || "./";
-      window.location.replace(path + "?reset=" + Date.now());
-    }).catch(function (error) {
-      console.error(error);
-      state.resettingData = false;
-      setResetButtonsBusy(false);
-      window.alert(error && error.message ? error.message : "清除失败，请完全关闭 Safari 后重新打开并再试一次。");
     });
   }
 
@@ -2834,10 +2743,6 @@ require(["mdict-parser"], function (MParser) {
   elements.fileInput.addEventListener("change", handleFileEvent);
   elements.errorFileInput.addEventListener("change", handleFileEvent);
   elements.reloadPage.addEventListener("click", function () { window.location.reload(); });
-  elements.resetLocalData.forEach(function (button) {
-    button.dataset.resetLabel = button.textContent;
-    button.addEventListener("click", resetLocalData);
-  });
   elements.startDictionarySet.addEventListener("click", function () {
     if (elements.startDictionarySet.disabled) return;
     var learning = dictionaryById(state.learningDictionaryId);
