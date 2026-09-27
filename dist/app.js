@@ -49,6 +49,7 @@ require(["mdict-parser"], function (MParser) {
     mdictTaskQueue: [],
     mdictTaskActive: null,
     mdictTaskSequence: 0,
+    openDatabases: [],
     sourceWords: [],
     words: [],
     progress: null,
@@ -63,12 +64,14 @@ require(["mdict-parser"], function (MParser) {
     dictionaryCapped: false,
     definitionCache: Object.create(null),
     saveChain: Promise.resolve(),
+    dictionarySaveChain: Promise.resolve(),
     completed: false,
     completionTimer: null,
     libraryVisibleLimit: LIBRARY_PAGE_SIZE,
     quickRatingWord: "",
     libraryDefinitionToken: 0,
-    libraryDefinitionWord: ""
+    libraryDefinitionWord: "",
+    resettingData: false
   };
 
   var elements = {
@@ -79,6 +82,7 @@ require(["mdict-parser"], function (MParser) {
     fileInput: document.getElementById("dict-file"),
     errorFileInput: document.getElementById("dict-file-error"),
     reloadPage: document.getElementById("reload-page"),
+    resetLocalData: Array.prototype.slice.call(document.querySelectorAll(".reset-local-data")),
     progressFileInput: document.getElementById("progress-file"),
     studyProgressFileInput: document.getElementById("study-progress-file"),
     exportProgress: document.getElementById("export-progress"),
@@ -194,6 +198,7 @@ require(["mdict-parser"], function (MParser) {
       lastModified: Number(source.lastModified != null ? source.lastModified : file && file.lastModified) || 0,
       file: file || null,
       filePromise: null,
+      stored: Boolean(source.stored),
       referenceEnabled: source.referenceEnabled !== false,
       lookup: null,
       lookupPromise: null,
@@ -884,9 +889,20 @@ require(["mdict-parser"], function (MParser) {
         if (!request.result.objectStoreNames.contains(FILE_STORE)) request.result.createObjectStore(FILE_STORE);
         if (!request.result.objectStoreNames.contains(PROGRESS_STORE)) request.result.createObjectStore(PROGRESS_STORE);
       };
-      request.onsuccess = function () { resolve(request.result); };
+      request.onsuccess = function () {
+        var db = request.result;
+        state.openDatabases.push(db);
+        db.onversionchange = function () { closeDatabase(db); };
+        resolve(db);
+      };
       request.onerror = function () { reject(request.error); };
     });
+  }
+
+  function closeDatabase(db) {
+    var index = state.openDatabases.indexOf(db);
+    if (index >= 0) state.openDatabases.splice(index, 1);
+    try { db.close(); } catch (error) {}
   }
 
   function dbRequest(storeName, mode, action) {
@@ -897,8 +913,9 @@ require(["mdict-parser"], function (MParser) {
         var request = action(store);
         request.onsuccess = function () { resolve(request.result); };
         request.onerror = function () { reject(request.error); };
-        transaction.oncomplete = function () { db.close(); };
-        transaction.onerror = function () { db.close(); };
+        transaction.oncomplete = function () { closeDatabase(db); };
+        transaction.onerror = function () { closeDatabase(db); };
+        transaction.onabort = function () { closeDatabase(db); };
       });
     });
   }
@@ -956,15 +973,41 @@ require(["mdict-parser"], function (MParser) {
       return new Promise(function (resolve, reject) {
         var transaction = db.transaction(FILE_STORE, "readwrite");
         var store = transaction.objectStore(FILE_STORE);
+        var newlyStored = [];
+        var retainedKeys = Object.create(null);
         state.dictionaries.forEach(function (dictionary) {
-          if (dictionary.file) store.put(dictionaryFileRecord(dictionary), DICTIONARY_FILE_PREFIX + dictionary.id);
+          var key = DICTIONARY_FILE_PREFIX + dictionary.id;
+          retainedKeys[key] = true;
+          if (dictionary.file && !dictionary.stored) {
+            store.put(dictionaryFileRecord(dictionary), key);
+            newlyStored.push(dictionary);
+          }
         });
+        var keysRequest = store.getAllKeys();
+        keysRequest.onsuccess = function () {
+          keysRequest.result.forEach(function (key) {
+            if (typeof key === "string" && key.indexOf(DICTIONARY_FILE_PREFIX) === 0 && !retainedKeys[key]) store.delete(key);
+          });
+        };
+        store.delete(ACTIVE_FILE_KEY);
         store.put(dictionarySetRecord(), DICTIONARY_SET_KEY);
-        transaction.oncomplete = function () { db.close(); resolve(); };
-        transaction.onerror = function () { var error = transaction.error; db.close(); reject(error); };
-        transaction.onabort = function () { var error = transaction.error; db.close(); reject(error); };
+        transaction.oncomplete = function () {
+          newlyStored.forEach(function (dictionary) { dictionary.stored = true; });
+          closeDatabase(db);
+          resolve();
+        };
+        transaction.onerror = function () { var error = transaction.error; closeDatabase(db); reject(error); };
+        transaction.onabort = function () { var error = transaction.error; closeDatabase(db); reject(error); };
       });
     });
+  }
+
+  function queueRememberDictionarySet() {
+    state.dictionarySaveChain = state.dictionarySaveChain.catch(function () {}).then(function () {
+      if (state.resettingData) return null;
+      return rememberDictionarySet();
+    });
+    return state.dictionarySaveChain;
   }
 
   function fileFromRecord(record) {
@@ -1000,6 +1043,7 @@ require(["mdict-parser"], function (MParser) {
       var file = fileFromRecord(record);
       if (!file) throw new Error("这部词典没有完整保存在浏览器中，请重新导入该 MDX 文件。");
       dictionary.file = file;
+      dictionary.stored = true;
       dictionary.name = record.name || dictionary.name;
       dictionary.size = Number(record.size) || dictionary.size;
       dictionary.lastModified = Number(record.lastModified) || dictionary.lastModified;
@@ -1017,7 +1061,9 @@ require(["mdict-parser"], function (MParser) {
       .then(function (config) {
         if (!config || !Array.isArray(config.dictionaries) || !config.dictionaries.length) return null;
         var dictionaries = config.dictionaries.map(function (item) {
-          return dictionaryDescriptor(null, dictionaryMetadataFromStoredItem(item));
+          var metadata = dictionaryMetadataFromStoredItem(item);
+          metadata.stored = true;
+          return dictionaryDescriptor(null, metadata);
         }).filter(function (dictionary) { return Boolean(dictionary.id); });
         if (!dictionaries.length) return null;
         var learningId = dictionaries.some(function (dictionary) { return dictionary.id === config.learningId; })
@@ -1059,7 +1105,7 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function saveProgress() {
-    if (!state.progress || !state.fingerprint) return;
+    if (state.resettingData || !state.progress || !state.fingerprint) return;
     var snapshot;
     var serialized;
     try {
@@ -1076,6 +1122,96 @@ require(["mdict-parser"], function (MParser) {
       });
     }).catch(function (error) {
       console.warn("Progress could not be saved to IndexedDB", error);
+    });
+  }
+
+  function setResetButtonsBusy(busy) {
+    elements.resetLocalData.forEach(function (button) {
+      button.disabled = busy;
+      button.textContent = busy ? "正在清除，请稍候……" : button.dataset.resetLabel;
+    });
+  }
+
+  function removeParolaStorage(storage) {
+    try {
+      for (var index = storage.length - 1; index >= 0; index -= 1) {
+        var key = storage.key(index);
+        if (key && key.indexOf("parola-") === 0) storage.removeItem(key);
+      }
+    } catch (error) {
+      console.warn("Web storage could not be cleared", error);
+    }
+  }
+
+  function deleteParolaDatabase() {
+    if (!("indexedDB" in window)) return Promise.resolve();
+    state.openDatabases.slice().forEach(closeDatabase);
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error("Safari 仍在占用本地数据库，请完全关闭此页面后再试一次。"));
+      }, 10000);
+      var request = indexedDB.deleteDatabase(DB_NAME);
+      request.onsuccess = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      request.onerror = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(request.error || new Error("无法删除本地数据库。"));
+      };
+      request.onblocked = function () {
+        state.openDatabases.slice().forEach(closeDatabase);
+      };
+    });
+  }
+
+  function clearParolaCaches() {
+    if (!("caches" in window)) return Promise.resolve();
+    return caches.keys().then(function (names) {
+      return Promise.all(names.filter(function (name) {
+        return String(name).toLocaleLowerCase().indexOf("parola") >= 0;
+      }).map(function (name) { return caches.delete(name); }));
+    }).catch(function (error) {
+      console.warn("App caches could not be cleared", error);
+    });
+  }
+
+  function resetLocalData() {
+    if (state.resettingData) return;
+    var confirmed = window.confirm("这会删除当前浏览器中的全部 Parola 词库、学习进度和打卡记录，且无法撤销。建议先导出进度文件。\n\n确定清除并重新开始吗？");
+    if (!confirmed) return;
+    state.resettingData = true;
+    state.postStartTaskToken += 1;
+    state.compatibilityScanToken += 1;
+    state.cardToken += 1;
+    state.referenceRenderToken += 1;
+    state.libraryDefinitionToken += 1;
+    state.mdictTaskQueue.splice(0).forEach(function (task) { task.reject(cancelledMdictTaskError()); });
+    setResetButtonsBusy(true);
+    Promise.all([
+      Promise.resolve(state.saveChain).catch(function () {}),
+      Promise.resolve(state.dictionarySaveChain).catch(function () {})
+    ]).then(function () {
+      return deleteParolaDatabase();
+    }).then(function () {
+      removeParolaStorage(window.localStorage);
+      removeParolaStorage(window.sessionStorage);
+      return clearParolaCaches();
+    }).then(function () {
+      var path = window.location.pathname || "./";
+      window.location.replace(path + "?reset=" + Date.now());
+    }).catch(function (error) {
+      console.error(error);
+      state.resettingData = false;
+      setResetButtonsBusy(false);
+      window.alert(error && error.message ? error.message : "清除失败，请完全关闭 Safari 后重新打开并再试一次。");
     });
   }
 
@@ -1227,16 +1363,38 @@ require(["mdict-parser"], function (MParser) {
     return words;
   }
 
-  function parseDictionary(dictionary) {
-    var file = dictionary.file;
-    elements.loadingMessage.textContent = "正在读取词典结构……";
-    return enqueueMdictTask(function () { return MParser([file]); }, {
-      priority: 120,
-      timeoutMs: DICTIONARY_PARSE_TIMEOUT_MS,
-      timeoutMessage: "读取词典结构超时。请刷新页面后重试；学习进度不会丢失。"
+  function ensureDictionaryLookup(dictionary, options) {
+    var source = options || {};
+    if (dictionary.lookup) {
+      dictionary.lastLookupUsed = Date.now();
+      return Promise.resolve(dictionary.lookup);
+    }
+    if (dictionary.lookupPromise) return dictionary.lookupPromise;
+    dictionary.lookupPromise = ensureDictionaryFile(dictionary).then(function (file) {
+      return enqueueMdictTask(function () { return MParser([file]); }, {
+        priority: source.priority == null ? 60 : source.priority,
+        onStart: source.onStart || null,
+        onFinish: source.onFinish || null,
+        timeoutMs: DICTIONARY_PARSE_TIMEOUT_MS,
+        timeoutMessage: source.timeoutMessage || "读取词典结构超时"
+      });
     }).then(function (resources) {
       if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
-      return resources.mdx;
+      dictionary.lookup = resources.mdx;
+      dictionary.lastLookupUsed = Date.now();
+      trimReferenceLookupCache(dictionary);
+      return dictionary.lookup;
+    }).finally(function () {
+      dictionary.lookupPromise = null;
+    });
+    return dictionary.lookupPromise;
+  }
+
+  function parseDictionary(dictionary) {
+    elements.loadingMessage.textContent = "正在读取词典结构……";
+    return ensureDictionaryLookup(dictionary, {
+      priority: 120,
+      timeoutMessage: "读取词典结构超时。请刷新页面后重试；学习进度不会丢失。"
     }).then(function (lookup) {
       state.lookup = lookup;
       if (dictionary.words && dictionary.words.length) {
@@ -1356,14 +1514,13 @@ require(["mdict-parser"], function (MParser) {
     });
   }
 
-  function schedulePostStartTasks(dictionary, shouldRemember) {
+  function schedulePostStartTasks(dictionary) {
     var token = ++state.postStartTaskToken;
     var fingerprint = dictionary.id;
     var firstDefinition = state.currentDefinitionPromise || Promise.resolve();
     firstDefinition.catch(function () {}).then(function () { return idleTurn(500); }).then(function () {
       if (token !== state.postStartTaskToken || fingerprint !== state.fingerprint) return null;
-      if (!shouldRemember && dictionary.wordsRestored) return null;
-      return rememberDictionarySet().then(function () {
+      return queueRememberDictionarySet().then(function () {
         dictionary.wordsRestored = true;
       }).catch(function (error) {
         console.warn("Dictionary set could not be remembered", error);
@@ -1382,11 +1539,12 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function importDictionary(fileOrDictionary, shouldRemember) {
-    if (!fileOrDictionary) return;
+    if (!fileOrDictionary) return Promise.resolve(false);
     var dictionary = fileOrDictionary.file ? fileOrDictionary : dictionaryDescriptor(fileOrDictionary);
     var file = dictionary.file;
-    if (!/\.mdx$/i.test(file.name)) { showError("请选择扩展名为 .mdx 的词典文件。"); return; }
-    if (!window.FSRS) { showError("FSRS 调度组件没有加载成功，请刷新页面后重试。"); return; }
+    var canReuseLookup = Boolean(state.lookup && state.fingerprint === dictionary.id);
+    if (!file || !/\.mdx$/i.test(file.name)) { showError("请选择扩展名为 .mdx 的词典文件。"); return Promise.resolve(false); }
+    if (!window.FSRS) { showError("FSRS 调度组件没有加载成功，请刷新页面后重试。"); return Promise.resolve(false); }
     if (state.completionTimer) {
       clearTimeout(state.completionTimer);
       state.completionTimer = null;
@@ -1399,9 +1557,27 @@ require(["mdict-parser"], function (MParser) {
     state.fingerprint = dictionary.id;
     state.legacyFingerprint = legacyFileFingerprint(file);
     state.definitionCache = Object.create(null);
+    state.postStartTaskToken += 1;
+    state.compatibilityScanToken += 1;
+    state.cardToken += 1;
+    state.referenceRenderToken += 1;
     showView("loadingView");
 
-    parseDictionary(dictionary).then(function () { return loadProgress(); }).then(function (progress) {
+    if (canReuseLookup) {
+      startStudy();
+      if (shouldRemember) {
+        return queueRememberDictionarySet().then(function () {
+          return true;
+        }).catch(function (error) {
+          console.warn("Dictionary set could not be remembered", error);
+          setProgressStatus("词库组合没有保存成功；本次仍可继续学习。", true);
+          return true;
+        });
+      }
+      return Promise.resolve(true);
+    }
+
+    return parseDictionary(dictionary).then(function () { return loadProgress(); }).then(function (progress) {
       var restoreMessage = "";
       var restoreFailed = false;
       state.progress = progress;
@@ -1419,11 +1595,13 @@ require(["mdict-parser"], function (MParser) {
       applyStudyOrder();
       startStudy();
       saveProgress();
-      schedulePostStartTasks(dictionary, shouldRemember);
+      schedulePostStartTasks(dictionary);
       if (restoreMessage) setProgressStatus(restoreMessage, restoreFailed);
+      return true;
     }).catch(function (error) {
       console.error(error);
       showError(error && /(?:FSRS|超时)/.test(error.message) ? error.message : "无法解析这个词库。它可能使用了加密、特殊压缩格式，或不是标准的 MDict 2.0 文件。");
+      return false;
     });
   }
 
@@ -1596,35 +1774,17 @@ require(["mdict-parser"], function (MParser) {
   }
 
   function loadReferenceLookup(dictionary, options) {
-    if (dictionary.lookup) {
-      dictionary.lastLookupUsed = Date.now();
-      return Promise.resolve(dictionary.lookup);
-    }
-    if (dictionary.lookupPromise) return dictionary.lookupPromise;
     var source = options || {};
-    dictionary.lookupPromise = ensureDictionaryFile(dictionary).then(function (file) {
-      return enqueueMdictTask(function () { return MParser([file]); }, {
-        priority: source.priority == null ? 60 : source.priority,
-        onStart: function () {
-          if (source.onStage) source.onStage("正在读取词典结构");
-        },
-        onFinish: function () {
-          if (source.onStage) source.onStage("等待读取");
-        },
-        timeoutMs: DICTIONARY_PARSE_TIMEOUT_MS,
-        timeoutMessage: "读取参考词典结构超时"
-      });
-    }).then(function (resources) {
-        if (!resources.mdx) throw new Error("没有找到可用的 MDX 内容");
-        dictionary.lookup = resources.mdx;
-        dictionary.lastLookupUsed = Date.now();
-        trimReferenceLookupCache(dictionary);
-        return dictionary.lookup;
-      }).catch(function (error) {
-        dictionary.lookupPromise = null;
-        throw error;
-      });
-    return dictionary.lookupPromise;
+    return ensureDictionaryLookup(dictionary, {
+      priority: source.priority == null ? 60 : source.priority,
+      onStart: function () {
+        if (source.onStage) source.onStage("正在读取词典结构");
+      },
+      onFinish: function () {
+        if (source.onStage) source.onStage("等待读取");
+      },
+      timeoutMessage: "读取参考词典结构超时"
+    });
   }
 
   function trimReferenceLookupCache(currentDictionary) {
@@ -2674,17 +2834,25 @@ require(["mdict-parser"], function (MParser) {
   elements.fileInput.addEventListener("change", handleFileEvent);
   elements.errorFileInput.addEventListener("change", handleFileEvent);
   elements.reloadPage.addEventListener("click", function () { window.location.reload(); });
+  elements.resetLocalData.forEach(function (button) {
+    button.dataset.resetLabel = button.textContent;
+    button.addEventListener("click", resetLocalData);
+  });
   elements.startDictionarySet.addEventListener("click", function () {
+    if (elements.startDictionarySet.disabled) return;
     var learning = dictionaryById(state.learningDictionaryId);
     if (!learning) { setImportStatus("请先导入并选择一部学习词库。", true); return; }
+    elements.startDictionarySet.disabled = true;
     refreshReferenceDictionaries();
     showView("loadingView");
     elements.loadingMessage.textContent = "正在载入学习词典……";
     ensureDictionaryFile(learning).then(function () {
-      importDictionary(learning, true);
+      return importDictionary(learning, true);
     }).catch(function (error) {
       console.error(error);
       showError(error.message || "无法从浏览器存储恢复这部词典，请重新导入 MDX 文件。");
+    }).finally(function () {
+      elements.startDictionarySet.disabled = false;
     });
   });
   elements.progressFileInput.addEventListener("change", handleProgressFileEvent);
@@ -2729,6 +2897,10 @@ require(["mdict-parser"], function (MParser) {
       clearTimeout(state.completionTimer);
       state.completionTimer = null;
     }
+    state.postStartTaskToken += 1;
+    state.compatibilityScanToken += 1;
+    state.cardToken += 1;
+    state.referenceRenderToken += 1;
     renderDictionaryManager();
     showView("importView");
     elements.fileInput.focus();
