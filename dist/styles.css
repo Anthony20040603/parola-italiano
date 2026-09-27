@@ -1561,6 +1561,10 @@ h1 {
   line-height: 1.7;
 }
 
+.error-panel .secondary-button {
+  margin-left: 10px;
+}
+
 footer {
   display: flex;
   justify-content: center;
@@ -1571,6 +1575,12 @@ footer {
 }
 
 @media (max-width: 600px) {
+  .error-panel .file-button,
+  .error-panel .secondary-button {
+    width: 100%;
+    margin: 0 0 10px;
+  }
+
   .app-shell {
     padding-right: 16px;
     padding-left: 16px;

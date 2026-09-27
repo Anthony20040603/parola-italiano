@@ -108,6 +108,7 @@ assert.match(html, /id="dictionary-manager"/);
 assert.match(html, /id="dict-file"[^>]*multiple/);
 assert.match(html, /id="reference-dictionaries"/);
 assert.match(html, /id="retry-definition"/);
+assert.match(html, /id="reload-page"/);
 assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function openWordDefinitions\(word\)/);
@@ -118,16 +119,61 @@ assert.match(appSource, /function applyQuickRating\(rating\)/);
 assert.match(appSource, /lastResult = "manual-library"/);
 assert.match(appSource, /function rememberDictionarySet\(\)/);
 assert.match(appSource, /function restoreDictionarySet\(\)/);
-assert.match(appSource, /function loadReferenceLookup\(dictionary\)/);
+assert.match(appSource, /function ensureDictionaryFile\(dictionary\)/);
+assert.match(appSource, /function loadReferenceLookup\(dictionary, options\)/);
 assert.match(appSource, /function showReferenceDictionaries\(\)/);
 assert.match(appSource, /function ensureDictionaryHash\(dictionary\)/);
 assert.match(appSource, /function analyzeChineseClue\(definition, word\)/);
 assert.match(appSource, /function scanLearningCompatibility\(dictionary\)/);
-assert.match(appSource, /function promiseWithTimeout\(promise, timeoutMs, message\)/);
-assert.match(appSource, /function serializedLookup\(holder, chainKey, lookup, query, timeoutMs\)/);
+assert.match(appSource, /function enqueueMdictTask\(run, options\)/);
+assert.match(appSource, /function pumpMdictTaskQueue\(\)/);
+assert.match(appSource, /function trimReferenceLookupCache\(currentDictionary\)/);
 assert.match(appSource, /function schedulePostStartTasks\(dictionary, shouldRemember\)/);
 assert.match(appSource, /words: dictionary\.words \|\| null/);
 assert.match(appSource, /function rememberDictionaryMetadata\(\)/);
-assert.match(appSource, /function readDictionaryFileRecords\(items\)/);
+assert.doesNotMatch(appSource, /function readDictionaryFileRecords\(items\)/);
+
+const queueFunctions = appSource.match(
+  /  function cancelledMdictTaskError[\s\S]*?(?=\n  function idleTurn)/,
+);
+assert.ok(queueFunctions, "global MDict task queue should be present");
+const queueContext = {
+  Promise,
+  setTimeout,
+  clearTimeout,
+  DEFINITION_TIMEOUT_MS: 1000,
+  state: {
+    mdictTaskQueue: [],
+    mdictTaskActive: null,
+    mdictTaskSequence: 0,
+    lookup() {},
+  },
+};
+vm.runInNewContext(queueFunctions[0], queueContext);
+const queueEvents = [];
+let activeTasks = 0;
+let maximumActiveTasks = 0;
+function queuedTestTask(label, delay, priority) {
+  return queueContext.enqueueMdictTask(() => new Promise((resolve) => {
+    activeTasks += 1;
+    maximumActiveTasks = Math.max(maximumActiveTasks, activeTasks);
+    queueEvents.push(`${label}:start`);
+    setTimeout(() => {
+      queueEvents.push(`${label}:end`);
+      activeTasks -= 1;
+      resolve(label);
+    }, delay);
+  }), { priority, timeoutMs: 1000 });
+}
+const firstQueuedTask = queuedTestTask("first", 15, 10);
+const lowQueuedTask = queuedTestTask("low", 1, 10);
+const highQueuedTask = queuedTestTask("high", 1, 100);
+await Promise.all([firstQueuedTask, lowQueuedTask, highQueuedTask]);
+assert.equal(maximumActiveTasks, 1, "only one MDict task may run at a time");
+assert.deepEqual(queueEvents, [
+  "first:start", "first:end",
+  "high:start", "high:end",
+  "low:start", "low:end",
+]);
 
 console.log("Parola smoke tests passed.");
