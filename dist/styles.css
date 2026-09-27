@@ -123,6 +123,16 @@ a:focus-visible {
   line-height: 1;
 }
 
+.brand .version-label {
+  margin-left: 5px;
+  color: var(--muted);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  vertical-align: 0.18em;
+}
+
 .brand small {
   margin-top: 4px;
   color: var(--muted);

@@ -109,6 +109,7 @@ assert.match(html, /id="dict-file"[^>]*multiple/);
 assert.match(html, /id="reference-dictionaries"/);
 assert.match(html, /id="retry-definition"/);
 assert.match(html, /id="reload-page"/);
+assert.match(html, /class="version-label">v1\.8\.2</);
 assert.match(html, /id="dictionary-compatibility"/);
 assert.match(appSource, /function renderLibraryProgress\(\)/);
 assert.match(appSource, /function openWordDefinitions\(word\)/);
